@@ -5,6 +5,7 @@
   const D = window.RUBIK_DATA;
   const S = window.RubikSolver;
   const Scan = window.RubikScan;
+  const Detect = window.RubikDetect;
   const $ = (sel, el) => (el || document).querySelector(sel);
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -630,6 +631,70 @@
     return true;
   }
 
+  // ---- Bám theo mặt khối bằng OpenCV ----
+  // tracker.quad là 4 góc của mặt khối trong canvas. Khi OpenCV chưa tải xong (hoặc tải lỗi) thì dùng khung lưới
+  // cố định ở giữa. Mọi thứ vẽ đè lên khối (lưới, mũi tên) được vẽ trong "hệ toạ độ khung cố định" rồi biến đổi
+  // sang vị trí thật của khối, nên phần vẽ không cần biết khối đang ở đâu.
+  const tracker = { state: 'off', cv: null, quad: null, misses: 0, stroke: 1 };
+  function ensureTracker() {
+    if (tracker.state !== 'off') return;
+    tracker.state = 'loading';
+    Detect.load('vendor/opencv.js').then(
+      (m) => {
+        tracker.cv = m.cv;
+        tracker.state = 'ready';
+      },
+      () => {
+        tracker.state = 'failed';
+      }
+    );
+  }
+  const fixedQuad = (canvas) => {
+    const a = GRID.from * canvas.width;
+    const b = a + GRID.size * canvas.width;
+    return { tl: { x: a, y: a }, tr: { x: b, y: a }, br: { x: b, y: b }, bl: { x: a, y: b } };
+  };
+  const tracking = () => tracker.state === 'ready';
+  const currentQuad = (canvas) => (tracking() ? tracker.quad : fixedQuad(canvas));
+
+  // Dò lại vị trí khối trên khung hình vừa vẽ (gọi trước khi vẽ đè bất cứ thứ gì lên canvas).
+  function updateTracker(canvas) {
+    if (!tracking()) return;
+    let found = null;
+    try {
+      found = Detect.find(tracker.cv, canvas);
+    } catch (e) {
+      found = null;
+    }
+    if (found) {
+      const prev = tracker.quad;
+      // Làm mượt để lưới không rung; nếu khối vừa nhảy xa thì lấy luôn vị trí mới.
+      const near = prev && Math.hypot(prev.tl.x - found.tl.x, prev.tl.y - found.tl.y) < canvas.width * 0.08;
+      const mix = (p, q) => (near ? { x: p.x * 0.4 + q.x * 0.6, y: p.y * 0.4 + q.y * 0.6 } : q);
+      tracker.quad = { tl: mix(prev && prev.tl, found.tl), tr: mix(prev && prev.tr, found.tr), br: mix(prev && prev.br, found.br), bl: mix(prev && prev.bl, found.bl) };
+      tracker.misses = 0;
+    } else if (++tracker.misses > 3) tracker.quad = null;
+  }
+
+  // Phép biến đổi đưa khung cố định về đúng vị trí mặt khối: (x, y) -> (m[0]x + m[2]y + m[4], m[1]x + m[3]y + m[5]).
+  function quadMatrix(canvas, quad) {
+    const a = GRID.from * canvas.width;
+    const L = GRID.size * canvas.width;
+    const m0 = (quad.tr.x - quad.tl.x) / L, m1 = (quad.tr.y - quad.tl.y) / L;
+    const m2 = (quad.bl.x - quad.tl.x) / L, m3 = (quad.bl.y - quad.tl.y) / L;
+    return [m0, m1, m2, m3, quad.tl.x - m0 * a - m2 * a, quad.tl.y - m1 * a - m3 * a];
+  }
+  function onCube(canvas, quad, draw) {
+    const ctx = canvas.getContext('2d');
+    const m = quadMatrix(canvas, quad);
+    // Khối càng nhỏ trong hình thì nét vẽ càng mảnh theo; bù lại một phần để mũi tên vẫn dễ nhìn.
+    tracker.stroke = 1 / Math.pow(Math.max(0.2, Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]))), 0.6);
+    ctx.save();
+    ctx.setTransform(...m);
+    draw();
+    ctx.restore();
+  }
+
   // Khung lưới 3x3: viền đậm bên dưới, nét sáng bên trên để nhìn rõ trên mọi nền.
   function drawGrid(canvas) {
     const ctx = canvas.getContext('2d');
@@ -652,17 +717,21 @@
   }
 
   // Màu trung bình và độ loang màu của vùng giữa mỗi ô (tránh viền nhựa đen và đường lưới).
-  function sampleFace(canvas) {
+  function sampleFace(canvas, quad) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const w = canvas.width;
     const cell = (GRID.size * w) / 3;
-    const box = Math.round(cell * 0.36);
+    const m = quadMatrix(canvas, quad || fixedQuad(canvas));
+    const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])); // khối to hay nhỏ so với khung cố định
+    const box = Math.max(4, Math.round(cell * 0.36 * scale));
     const mean = [];
     const spread = [];
     for (let r = 0; r < 3; r++)
       for (let c = 0; c < 3; c++) {
-        const x = Math.round(GRID.from * w + (c + 0.5) * cell - box / 2);
-        const y = Math.round(GRID.from * w + (r + 0.5) * cell - box / 2);
+        const gx = GRID.from * w + (c + 0.5) * cell;
+        const gy = GRID.from * w + (r + 0.5) * cell;
+        const x = Math.max(0, Math.min(w - box, Math.round(m[0] * gx + m[2] * gy + m[4] - box / 2)));
+        const y = Math.max(0, Math.min(w - box, Math.round(m[1] * gx + m[3] * gy + m[5] - box / 2)));
         const px = ctx.getImageData(x, y, box, box).data;
         const n = px.length / 4;
         const sum = [0, 0, 0];
@@ -679,8 +748,18 @@
   }
 
   // Theo dõi xem hình trong khung có đứng yên không. Trả về { sample, still, steady } với still = số lần đo liên tiếp đứng yên.
-  function watchFrame(tracker, canvas) {
-    const sample = sampleFace(canvas);
+  function watchFrame(watch, canvas) {
+    updateTracker(canvas);
+    const quad = currentQuad(canvas);
+    if (!quad) {
+      // Đang bám bằng OpenCV mà không thấy khối: coi như hình đang chuyển động.
+      watch.last = null;
+      watch.still = 0;
+      watch.moved = true;
+      return { sample: null, still: 0, uniform: false, lost: true };
+    }
+    const tracker = watch;
+    const sample = sampleFace(canvas, quad);
     const prev = tracker.last;
     tracker.last = sample;
     let change = Infinity;
@@ -749,9 +828,10 @@
 
   // Gọi khoảng 10 lần mỗi giây: tự chụp khi mặt trong khung đứng yên, màu từng ô đều, và là mặt chưa chụp.
   function autoCheck() {
-    const { sample, still, uniform } = watchFrame(scan, scanCanvas);
-    if (!still) return setScanStatus('Đưa một mặt của khối vào khung lưới…');
-    if (!uniform) return setScanStatus('Canh cho mỗi ô lưới nằm gọn trong một ô màu.');
+    const { sample, still, uniform, lost } = watchFrame(scan, scanCanvas);
+    if (lost) return setScanStatus('Chưa thấy khối. Đưa thẳng một mặt của khối ra trước camera.');
+    if (!still) return setScanStatus(tracking() ? 'Đã thấy khối, giữ yên…' : 'Đưa một mặt của khối vào khung lưới…');
+    if (!uniform) return setScanStatus(tracking() ? 'Giữ khối thẳng mặt với camera, đừng để tay che ô màu.' : 'Canh cho mỗi ô lưới nằm gọn trong một ô màu.');
     const center = Scan.features(sample.mean[4]);
     if (scan.shots.some((shot) => Scan.distance(Scan.features(shot[4]), center) < 9)) return setScanStatus('Mặt này đã chụp rồi, xoay sang mặt khác.');
     if (still >= 7 && scan.moved) return takeShot(sample.mean);
@@ -765,7 +845,8 @@
       autoCheck(); // lấy mẫu trước khi vẽ lưới đè lên ảnh
       if (!scan.on) return;
     }
-    drawGrid(scanCanvas);
+    const quad = currentQuad(scanCanvas);
+    if (quad) onCube(scanCanvas, quad, () => drawGrid(scanCanvas));
     scan.raf = requestAnimationFrame(drawScan);
   }
 
@@ -780,6 +861,7 @@
   async function startScan() {
     stopLive();
     clearSolution();
+    ensureTracker();
     try {
       await openCamera('environment');
     } catch (e) {
@@ -822,7 +904,7 @@
 
   $('#btnScan').addEventListener('click', startScan);
   $('#btnCapture').addEventListener('click', () => {
-    if (scan.on && drawFrame(scanCanvas)) takeShot(sampleFace(scanCanvas).mean);
+    if (scan.on && drawFrame(scanCanvas)) takeShot(sampleFace(scanCanvas, currentQuad(scanCanvas)).mean);
   });
   $('#btnScanCancel').addEventListener('click', stopScan);
   $('#btnOtherFit').addEventListener('click', () => {
@@ -871,7 +953,8 @@
   }
 
   function strokeBoth(ctx, color, draw) {
-    for (const [c, w] of [['rgba(0,0,0,0.7)', 15], [color, 8]]) {
+    for (const [c, base] of [['rgba(0,0,0,0.7)', 15], [color, 8]]) {
+      const w = base * tracker.stroke;
       ctx.strokeStyle = c;
       ctx.fillStyle = c;
       ctx.lineWidth = w;
@@ -982,7 +1065,7 @@
     const stage = currentStage();
     const stageName = stage >= 0 ? player.item.stages[stage].name : '';
     $('#liveStep').textContent = done ? `Xong ${moves.length} / ${moves.length} lượt` : `Lượt ${live.index + 1} / ${moves.length} · ${stageName}`;
-    const text = done ? 'Khối đã được giải xong!' : !live.synced ? 'Giơ mặt tâm xanh lá vào khung, tâm trắng ở trên' : describeMove(moves[live.index], mirror);
+    const text = done ? 'Khối đã được giải xong!' : !live.synced ? 'Giơ mặt tâm xanh lá ra trước camera, tâm trắng ở trên' : describeMove(moves[live.index], mirror);
     $('#liveMove').textContent = text;
     $('#btnLiveBack').disabled = live.index === 0;
     $('#btnLiveDone').disabled = done || !live.synced;
@@ -1034,9 +1117,10 @@
   }
 
   function liveCheck() {
-    const { sample, still, uniform } = watchFrame(live, liveCanvas);
+    const { sample, still, uniform, lost } = watchFrame(live, liveCanvas);
     const moves = liveMoves();
     if (live.index >= moves.length) return;
+    if (lost) return setLiveStatus('Chưa thấy khối. Giơ thẳng mặt đang giải ra trước camera.');
     if (!still || !uniform) return;
     if (still < 4) return;
 
@@ -1056,7 +1140,7 @@
     if (visible && matches(seen, next) >= 8 && matches(seen, next) > matches(seen, cur)) return liveGo(live.index + 1, sample.mean);
     if (matches(seen, cur) >= 8) {
       live.undo = null;
-      return setLiveStatus(visible ? 'Làm theo mũi tên rồi đưa khối về lại khung.' : 'Lượt này camera không nhìn thấy được. Xoay xong thì bấm "Xong lượt này".');
+      return setLiveStatus(visible ? 'Làm theo mũi tên, rồi bỏ tay khỏi mặt này để app kiểm tra.' : 'Lượt này camera không nhìn thấy được. Xoay xong thì bấm "Xong lượt này".');
     }
     const move = moves[live.index];
     if (Math.abs(move.turns) === 2) {
@@ -1071,7 +1155,7 @@
       if ($('#liveStatus').textContent !== text) speak('Xoay nhầm rồi, làm theo mũi tên đỏ để quay lại');
       return setLiveStatus(text, 'bad');
     }
-    setLiveStatus('Chưa nhận ra mặt này. Đưa mặt đang giải vào vừa khít khung lưới.');
+    setLiveStatus('Chưa nhận ra mặt này. Giơ lại mặt đang giải thẳng trước camera.');
   }
 
   function drawLive(now) {
@@ -1081,11 +1165,15 @@
       liveCheck(); // lấy mẫu trước khi vẽ lưới và mũi tên đè lên ảnh
       if (!live.on) return;
     }
-    drawGrid(liveCanvas);
-    if (live.synced && live.index < liveMoves().length) {
-      if (live.undo) drawMove(liveCanvas, live.undo, '#ff4d4d');
-      else drawMove(liveCanvas, liveMoves()[live.index], '#3ddc84');
-    }
+    const quad = currentQuad(liveCanvas);
+    if (quad)
+      onCube(liveCanvas, quad, () => {
+        drawGrid(liveCanvas);
+        if (live.synced && live.index < liveMoves().length) {
+          if (live.undo) drawMove(liveCanvas, live.undo, '#ff4d4d');
+          else drawMove(liveCanvas, liveMoves()[live.index], '#3ddc84');
+        }
+      });
     live.raf = requestAnimationFrame(drawLive);
   }
 
@@ -1103,6 +1191,7 @@
   async function startLive() {
     if (!solve.solution) return;
     stopScan();
+    ensureTracker();
     try {
       await openCamera(live.facing);
     } catch (e) {
@@ -1120,7 +1209,7 @@
     } catch (e) { /* không giữ được thì thôi */ }
     $('#live').hidden = false;
     $('#btnLive').hidden = true;
-    setLiveStatus('Đang chờ khối vào khung…');
+    setLiveStatus('Đang chờ khối…');
     renderLive(true);
     cancelAnimationFrame(live.raf);
     live.raf = requestAnimationFrame(drawLive);
@@ -1391,5 +1480,5 @@
   setView(VIEWS.includes(initial) ? initial : 'learn');
 
   // Dùng cho việc kiểm thử thủ công trong console.
-  window.rubikApp = { view, player, solve, timer, practice, scan, live, setView, loadAlg, seek, openLesson };
+  window.rubikApp = { view, player, solve, timer, practice, scan, live, tracker, setView, loadAlg, seek, openLesson };
 })();
