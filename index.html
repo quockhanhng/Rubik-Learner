@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rubik từng bước</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Rubik từng bước</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="learn" role="tab">Học giải</button>
+      <button class="tab" data-view="library" role="tab">Công thức</button>
+      <button class="tab" data-view="practice" role="tab">Luyện tập</button>
+      <button class="tab" data-view="solve" role="tab">Giải khối</button>
+      <button class="tab" data-view="timer" role="tab">Bấm giờ</button>
+      <button class="tab" data-view="free" role="tab">Xoay tự do</button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="stage">
+      <div class="scene" id="scene" aria-label="Khối rubik 3D"></div>
+      <p class="hint" id="stageHint"></p>
+
+      <div class="player" id="player">
+        <div class="player-head">
+          <span class="player-title" id="playerTitle"></span>
+          <span class="player-count" id="playerCount"></span>
+        </div>
+        <div class="moves" id="moves"></div>
+        <div class="controls">
+          <button id="btnReset" title="Về đầu" aria-label="Về đầu">⏮</button>
+          <button id="btnPrev" title="Lùi một lượt" aria-label="Lùi một lượt">◀</button>
+          <button id="btnPlay" class="primary" title="Phát / tạm dừng">Phát</button>
+          <button id="btnNext" title="Tiến một lượt" aria-label="Tiến một lượt">▶</button>
+          <label class="speed">Tốc độ
+            <select id="speed">
+              <option value="0.5">Chậm</option>
+              <option value="1" selected>Vừa</option>
+              <option value="2">Nhanh</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="free-status" id="freeStatus" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div id="view-learn" class="view">
+        <div class="tracks" id="tracks"></div>
+        <ol class="steps" id="steps"></ol>
+        <article class="lesson" id="lesson"></article>
+      </div>
+
+      <div id="view-library" class="view" hidden>
+        <div class="lib-head">
+          <div class="chips" id="filters"></div>
+          <span class="progress" id="progress"></span>
+        </div>
+        <div id="cards"></div>
+      </div>
+
+      <div id="view-practice" class="view" hidden>
+        <div class="lib-head">
+          <div class="chips" id="practiceFilters"></div>
+          <span class="progress" id="practiceStats"></span>
+        </div>
+        <article class="lesson practice">
+          <p class="goal" id="practiceGroup"></p>
+          <h2 id="practiceQuestion">Công thức cho tình huống này là gì?</h2>
+          <p id="practiceTip">Nhìn khối bên cạnh, thử nhớ lại hoặc xoay trên khối thật, rồi bấm để xem đáp án.</p>
+          <div class="answer" id="practiceAnswer" hidden>
+            <span class="alg big" id="practiceAlg"></span>
+            <p class="note" id="practiceNote"></p>
+          </div>
+          <div class="practice-actions">
+            <button id="btnReveal" class="primary">Hiện công thức</button>
+            <button id="btnForgot" hidden>Chưa nhớ</button>
+            <button id="btnKnew" class="primary" hidden>Đã nhớ</button>
+            <button id="btnSkip">Bỏ qua</button>
+          </div>
+        </article>
+        <p class="hint left">Công thức trả lời "Chưa nhớ" sẽ được hỏi lại thường xuyên hơn; trả lời "Đã nhớ" nhiều lần thì thưa dần.</p>
+      </div>
+
+      <div id="view-solve" class="view" hidden>
+        <p class="lead">Cầm khối với <b>tâm trắng ở trên</b> và <b>tâm xanh lá hướng về phía mình</b>. Chọn một màu rồi bấm vào các ô để tô giống khối thật.</p>
+        <div class="scan-entry">
+          <button id="btnScan">Quét bằng camera</button>
+          <span class="hint">hoặc tô tay bên dưới</span>
+        </div>
+        <div class="scanner" id="scanner" hidden>
+          <p class="scan-step" id="scanStep"></p>
+          <p class="scan-status" id="scanStatus"></p>
+          <div class="scan-view">
+            <canvas id="scanCanvas" width="480" height="480"></canvas>
+            <video id="scanVideo" playsinline muted></video>
+          </div>
+          <div class="scan-faces" id="scanFaces"></div>
+          <div class="solve-actions">
+            <button id="btnCapture">Chụp tay</button>
+            <button id="btnScanCancel">Đóng camera</button>
+          </div>
+          <p class="hint left">Xoay khối để đưa lần lượt cả 6 mặt vào khung lưới, theo thứ tự và chiều nào cũng được. Giữ yên một chút, app tự chụp. Tránh để đèn loá vào ô màu. Bấm vào một mặt đã chụp để bỏ nó và chụp lại.</p>
+        </div>
+        <div class="palette" id="palette"></div>
+        <div class="net" id="net"></div>
+        <div class="solve-actions">
+          <button id="btnSolve" class="primary">Giải</button>
+          <button id="btnNetRandom">Thử với khối xáo ngẫu nhiên</button>
+          <button id="btnNetClear">Xoá hết</button>
+        </div>
+        <p class="solve-msg" id="solveMsg"></p>
+        <button id="btnOtherFit" hidden>Thử cách ghép khác</button>
+        <ol class="solution" id="solution"></ol>
+      </div>
+
+      <div id="view-timer" class="view" hidden>
+        <p class="scramble big" id="timerScramble"></p>
+        <button class="timer-display" id="timerDisplay">0.00</button>
+        <p class="hint">Bấm phím cách hoặc chạm vào đồng hồ để bắt đầu và dừng.</p>
+        <div class="timer-stats" id="timerStats"></div>
+        <div class="free-actions">
+          <button id="btnNewScramble">Đổi cách xáo</button>
+          <button id="btnClearTimes">Xoá lịch sử</button>
+        </div>
+        <ol class="times" id="times"></ol>
+      </div>
+
+      <div id="view-free" class="view" hidden>
+        <div class="free-actions">
+          <button id="btnScramble" class="primary">Xáo trộn</button>
+          <button id="btnSolved">Về khối đã giải</button>
+        </div>
+        <p class="scramble" id="scrambleText"></p>
+        <div class="move-grid" id="moveGrid"></div>
+        <h3>Đọc ký hiệu</h3>
+        <table class="notation">
+          <tbody>
+            <tr><td><b>R L U D F B</b></td><td>Phải, Trái, Trên, Dưới, Trước, Sau. Xoay mặt đó 90° theo chiều kim đồng hồ khi nhìn thẳng vào mặt.</td></tr>
+            <tr><td><b>R'</b></td><td>Dấu phẩy: xoay ngược chiều kim đồng hồ.</td></tr>
+            <tr><td><b>R2</b></td><td>Xoay mặt đó 180°.</td></tr>
+            <tr><td><b>r f u …</b></td><td>Chữ thường: xoay cùng lúc 2 lớp.</td></tr>
+            <tr><td><b>M E S</b></td><td>Lớp giữa. M xoay theo chiều của L, E theo D, S theo F.</td></tr>
+            <tr><td><b>x y z</b></td><td>Xoay cả khối theo chiều của R, U, F.</td></tr>
+          </tbody>
+        </table>
+        <p class="hint left">Bàn phím: bấm r l u d f b để xoay, giữ Shift để xoay ngược chiều.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/cube.js"></script>
+  <script src="js/f2l.js"></script>
+  <script src="js/ollpll.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/solver.js"></script>
+  <script src="js/scan.js"></script>
+  <script src="js/cube3d.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
