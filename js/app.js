@@ -534,6 +534,7 @@
 
   function clearSolution() {
     solve.solution = null;
+    stopLive();
     document.body.classList.remove('has-solution');
     stopPlayer();
     playerEl.hidden = true;
@@ -576,6 +577,7 @@
     });
     player.onUpdate = renderSolution;
     renderSolution();
+    $('#btnLive').hidden = live.on;
   }
 
   function runSolve() {
@@ -591,13 +593,117 @@
     if (window.matchMedia('(max-width: 820px)').matches) window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  // ---------- Camera dùng chung cho việc quét và việc giải cùng camera ----------
+  const GRID = { from: 0.12, size: 0.76 };
+  const scanVideo = $('#scanVideo');
+  const camera = { stream: null };
+
+  async function openCamera(facing) {
+    closeCamera();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      throw new Error('Trình duyệt không cho trang này dùng camera. Trang cần được mở qua địa chỉ HTTPS.');
+    try {
+      camera.stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      scanVideo.srcObject = camera.stream;
+      await scanVideo.play();
+    } catch (e) {
+      closeCamera();
+      throw new Error('Không mở được camera. Hãy cấp quyền camera cho trang, và mở trang qua địa chỉ HTTPS.');
+    }
+  }
+  function closeCamera() {
+    if (camera.stream) camera.stream.getTracks().forEach((t) => t.stop());
+    camera.stream = null;
+    scanVideo.srcObject = null;
+  }
+
+  // Vẽ khung hình camera (cắt vuông ở giữa) lên canvas. Trả về false nếu camera chưa có hình.
+  function drawFrame(canvas) {
+    const vw = scanVideo.videoWidth;
+    const vh = scanVideo.videoHeight;
+    if (!vw || !vh) return false;
+    const side = Math.min(vw, vh);
+    canvas.getContext('2d', { willReadFrequently: true }).drawImage(scanVideo, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, canvas.width, canvas.width);
+    return true;
+  }
+
+  // Khung lưới 3x3: viền đậm bên dưới, nét sáng bên trên để nhìn rõ trên mọi nền.
+  function drawGrid(canvas) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const a = GRID.from * w;
+    const cell = (GRID.size * w) / 3;
+    for (const [color, width] of [['rgba(0,0,0,0.55)', 5], ['rgba(255,255,255,0.95)', 2]]) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      for (let i = 0; i <= 3; i++) {
+        ctx.moveTo(a + i * cell, a);
+        ctx.lineTo(a + i * cell, a + 3 * cell);
+        ctx.moveTo(a, a + i * cell);
+        ctx.lineTo(a + 3 * cell, a + i * cell);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Màu trung bình và độ loang màu của vùng giữa mỗi ô (tránh viền nhựa đen và đường lưới).
+  function sampleFace(canvas) {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const w = canvas.width;
+    const cell = (GRID.size * w) / 3;
+    const box = Math.round(cell * 0.36);
+    const mean = [];
+    const spread = [];
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++) {
+        const x = Math.round(GRID.from * w + (c + 0.5) * cell - box / 2);
+        const y = Math.round(GRID.from * w + (r + 0.5) * cell - box / 2);
+        const px = ctx.getImageData(x, y, box, box).data;
+        const n = px.length / 4;
+        const sum = [0, 0, 0];
+        const sq = [0, 0, 0];
+        for (let i = 0; i < px.length; i += 4)
+          for (let k = 0; k < 3; k++) {
+            sum[k] += px[i + k];
+            sq[k] += px[i + k] * px[i + k];
+          }
+        mean.push(sum.map((v) => Math.round(v / n)));
+        spread.push(sum.reduce((acc, v, k) => acc + Math.sqrt(Math.max(0, sq[k] / n - (v / n) * (v / n))), 0) / 3);
+      }
+    return { mean, spread };
+  }
+
+  // Theo dõi xem hình trong khung có đứng yên không. Trả về { sample, still, steady } với still = số lần đo liên tiếp đứng yên.
+  function watchFrame(tracker, canvas) {
+    const sample = sampleFace(canvas);
+    const prev = tracker.last;
+    tracker.last = sample;
+    let change = Infinity;
+    if (prev) {
+      change = 0;
+      for (let i = 0; i < 9; i++) for (let k = 0; k < 3; k++) change = Math.max(change, Math.abs(sample.mean[i][k] - prev.mean[i][k]));
+    }
+    if (change > 14) {
+      tracker.still = 0;
+      tracker.moved = true;
+    } else tracker.still++;
+    return { sample, still: tracker.still, uniform: sample.spread.every((v) => v < 30) };
+  }
+  const flash = (canvas) => {
+    canvas.classList.add('flash');
+    setTimeout(() => canvas.classList.remove('flash'), 350);
+  };
+
   // ---------- Quét khối bằng camera ----------
   // Người dùng xoay khối, đưa lần lượt 6 mặt vào khung lưới theo thứ tự và chiều bất kỳ.
   // App tự chụp khi mặt đứng yên, nhận ra mặt nào qua ô tâm, rồi tự suy ra chiều của từng mặt.
-  const GRID = { from: 0.12, size: 0.76 };
-  const scan = { stream: null, raf: 0, shots: [], last: null, still: 0, moved: true, checkedAt: 0 };
+  const scan = { on: false, raf: 0, shots: [], last: null, still: 0, moved: true, checkedAt: 0, refs: null };
   const scanCanvas = $('#scanCanvas');
-  const scanVideo = $('#scanVideo');
 
   function setScanStatus(text, good) {
     const node = $('#scanStatus');
@@ -631,39 +737,11 @@
     $('#scanFaces').replaceChildren(...cells);
   }
 
-  // Màu trung bình và độ loang màu của vùng giữa mỗi ô (tránh viền nhựa đen và đường lưới).
-  function sampleFace() {
-    const ctx = scanCanvas.getContext('2d', { willReadFrequently: true });
-    const w = scanCanvas.width;
-    const cell = (GRID.size * w) / 3;
-    const box = Math.round(cell * 0.36);
-    const mean = [];
-    const spread = [];
-    for (let r = 0; r < 3; r++)
-      for (let c = 0; c < 3; c++) {
-        const x = Math.round(GRID.from * w + (c + 0.5) * cell - box / 2);
-        const y = Math.round(GRID.from * w + (r + 0.5) * cell - box / 2);
-        const px = ctx.getImageData(x, y, box, box).data;
-        const n = px.length / 4;
-        const sum = [0, 0, 0];
-        const sq = [0, 0, 0];
-        for (let i = 0; i < px.length; i += 4)
-          for (let k = 0; k < 3; k++) {
-            sum[k] += px[i + k];
-            sq[k] += px[i + k] * px[i + k];
-          }
-        mean.push(sum.map((v) => Math.round(v / n)));
-        spread.push(sum.reduce((acc, v, k) => acc + Math.sqrt(Math.max(0, sq[k] / n - (v / n) * (v / n))), 0) / 3);
-      }
-    return { mean, spread };
-  }
-
   function takeShot(mean) {
     scan.shots.push(mean);
     scan.moved = false;
     scan.still = 0;
-    scanCanvas.classList.add('flash');
-    setTimeout(() => scanCanvas.classList.remove('flash'), 350);
+    flash(scanCanvas);
     if (scan.shots.length === 6) return finishScan();
     setScanStatus('Đã chụp! Xoay sang mặt khác.', true);
     renderScan();
@@ -671,89 +749,43 @@
 
   // Gọi khoảng 10 lần mỗi giây: tự chụp khi mặt trong khung đứng yên, màu từng ô đều, và là mặt chưa chụp.
   function autoCheck() {
-    const s = sampleFace();
-    const prev = scan.last;
-    scan.last = s;
-    let change = Infinity;
-    if (prev) {
-      change = 0;
-      for (let i = 0; i < 9; i++) for (let k = 0; k < 3; k++) change = Math.max(change, Math.abs(s.mean[i][k] - prev.mean[i][k]));
-    }
-    if (change > 14) {
-      scan.still = 0;
-      scan.moved = true;
-      return setScanStatus('Đưa một mặt của khối vào khung lưới…');
-    }
-    scan.still++;
-    if (!s.spread.every((v) => v < 30)) return setScanStatus('Canh cho mỗi ô lưới nằm gọn trong một ô màu.');
-    const center = Scan.features(s.mean[4]);
+    const { sample, still, uniform } = watchFrame(scan, scanCanvas);
+    if (!still) return setScanStatus('Đưa một mặt của khối vào khung lưới…');
+    if (!uniform) return setScanStatus('Canh cho mỗi ô lưới nằm gọn trong một ô màu.');
+    const center = Scan.features(sample.mean[4]);
     if (scan.shots.some((shot) => Scan.distance(Scan.features(shot[4]), center) < 9)) return setScanStatus('Mặt này đã chụp rồi, xoay sang mặt khác.');
-    if (scan.still >= 7 && scan.moved) return takeShot(s.mean);
+    if (still >= 7 && scan.moved) return takeShot(sample.mean);
     setScanStatus('Giữ yên…');
   }
 
   function drawScan(now) {
-    const ctx = scanCanvas.getContext('2d', { willReadFrequently: true });
-    const w = scanCanvas.width;
-    const vw = scanVideo.videoWidth;
-    const vh = scanVideo.videoHeight;
-    if (vw && vh) {
-      const side = Math.min(vw, vh);
-      ctx.drawImage(scanVideo, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, w, w);
-      // Lấy mẫu trước khi vẽ lưới đè lên ảnh.
-      if (now - scan.checkedAt >= 100 && scan.stream) {
-        scan.checkedAt = now;
-        autoCheck();
-      }
+    if (!scan.on) return;
+    if (drawFrame(scanCanvas) && now - scan.checkedAt >= 100) {
+      scan.checkedAt = now;
+      autoCheck(); // lấy mẫu trước khi vẽ lưới đè lên ảnh
+      if (!scan.on) return;
     }
-    if (!scan.stream) return;
-    // Khung lưới: viền đậm bên dưới, nét sáng bên trên để nhìn rõ trên mọi nền.
-    const a = GRID.from * w;
-    const cell = (GRID.size * w) / 3;
-    for (const [color, width] of [['rgba(0,0,0,0.55)', 5], ['rgba(255,255,255,0.95)', 2]]) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.beginPath();
-      for (let i = 0; i <= 3; i++) {
-        ctx.moveTo(a + i * cell, a);
-        ctx.lineTo(a + i * cell, a + 3 * cell);
-        ctx.moveTo(a, a + i * cell);
-        ctx.lineTo(a + 3 * cell, a + i * cell);
-      }
-      ctx.stroke();
-    }
+    drawGrid(scanCanvas);
     scan.raf = requestAnimationFrame(drawScan);
   }
 
   function stopScan() {
+    if (scan.on) closeCamera();
+    scan.on = false;
     cancelAnimationFrame(scan.raf);
-    if (scan.stream) scan.stream.getTracks().forEach((t) => t.stop());
-    scan.stream = null;
-    scanVideo.srcObject = null;
     $('#scanner').hidden = true;
     $('.scan-entry').hidden = false;
   }
 
   async function startScan() {
+    stopLive();
     clearSolution();
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
-      return setSolveMsg('Trình duyệt không cho trang này dùng camera. Trang cần được mở qua địa chỉ HTTPS.', 'error');
     try {
-      scan.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      scanVideo.srcObject = scan.stream;
-      await scanVideo.play();
+      await openCamera('environment');
     } catch (e) {
-      stopScan();
-      return setSolveMsg('Không mở được camera. Hãy cấp quyền camera cho trang, và mở trang qua địa chỉ HTTPS.', 'error');
+      return setSolveMsg(e.message, 'error');
     }
-    scan.shots = [];
-    scan.last = null;
-    scan.still = 0;
-    scan.moved = true;
-    scan.checkedAt = 0;
+    Object.assign(scan, { on: true, shots: [], last: null, still: 0, moved: true, checkedAt: 0 });
     $('#scanner').hidden = false;
     $('.scan-entry').hidden = true;
     setScanStatus('Đưa một mặt của khối vào khung lưới…');
@@ -772,7 +804,10 @@
   }
 
   function finishScan() {
-    const found = S.resolveOrientation(Scan.classify(Scan.identify(scan.shots)), solver);
+    const faces = Scan.identify(scan.shots);
+    // Giữ màu thật của 6 ô tâm làm màu mẫu cho bước giải cùng camera.
+    scan.refs = Object.fromEntries(S.FACES.map((f) => [f, Scan.features(faces[f][4])]));
+    const found = S.resolveOrientation(Scan.classify(faces), solver);
     stopScan();
     clearSolution();
     fits.list = found.exact ? found.candidates : [found.net];
@@ -782,12 +817,12 @@
       setSolveMsg('Đã quét đủ 6 mặt nhưng chưa ghép được thành một khối hợp lệ, nhiều khả năng có ô bị nhận sai màu. Hãy quét lại ở chỗ sáng đều hơn, hoặc tô tay.', 'error');
     else if (found.ambiguous)
       setSolveMsg(`Đã quét xong. Có ${fits.list.length} cách ghép hợp lệ: cầm khối trắng trên, xanh lá trước rồi so với hình; nếu chưa khớp, bấm "Thử cách ghép khác".`, 'ok');
-    else setSolveMsg('Đã quét xong và tự nhận ra chiều của từng mặt. Cầm khối trắng trên, xanh lá trước rồi bấm Giải.', 'ok');
+    else setSolveMsg('Đã quét xong và tự nhận ra chiều của từng mặt. Bấm Giải để xem lời giải.', 'ok');
   }
 
   $('#btnScan').addEventListener('click', startScan);
   $('#btnCapture').addEventListener('click', () => {
-    if (scan.stream) takeShot(sampleFace().mean);
+    if (scan.on && drawFrame(scanCanvas)) takeShot(sampleFace(scanCanvas).mean);
   });
   $('#btnScanCancel').addEventListener('click', stopScan);
   $('#btnOtherFit').addEventListener('click', () => {
@@ -796,6 +831,320 @@
     clearSolution();
     showFit();
     setSolveMsg(msg, 'ok');
+  });
+
+  // ---------- Giải cùng camera ----------
+  // Camera chạy suốt lúc giải. Mặt khối hướng vào camera chính là mặt F của lời giải, nên mỗi lượt xoay
+  // vẽ được thành mũi tên ngay trên khung lưới. Sau mỗi lượt, app đọc 9 ô đang thấy và so với trạng thái
+  // mong đợi: khớp thì tự sang lượt kế, khớp với một lượt khác thì báo xoay nhầm và chỉ cách quay lại.
+  const live = { on: false, raf: 0, index: 0, fronts: [], states: [], refs: {}, synced: false, undo: null, wrong: {}, facing: 'user', voice: true, last: null, still: 0, moved: true, checkedAt: 0, wake: null };
+  const liveCanvas = $('#liveCanvas');
+  const frontOf = (state) => {
+    const out = [];
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(C.stickerAt(state, [c - 1, r - 1, 1], [0, 0, 1]).face);
+    return out;
+  };
+  const matches = (a, b) => a.reduce((n, x, i) => n + (x === b[i] ? 1 : 0), 0);
+  const liveMoves = () => player.moves;
+
+  function describeMove(move, mirror) {
+    const twice = Math.abs(move.turns) === 2 ? ' hai lần' : '';
+    const positive = move.turns > 0;
+    const list = (layers, names) => layers.map((l) => names[l + 1]).join(' và ');
+    if (move.axis === 'x') {
+      if (move.layers.length === 3) return `Lật cả khối ${positive ? 'lên' : 'xuống'}${twice}`;
+      const cols = move.layers.map((l) => (mirror ? -l : l)).sort((p, q) => p - q);
+      return `Đẩy cột ${list(cols, ['trái', 'giữa', 'phải'])} ${positive ? 'lên' : 'xuống'}${twice}`;
+    }
+    if (move.axis === 'y') {
+      const right = positive !== mirror;
+      if (move.layers.length === 3) return `Xoay cả khối sang ${right ? 'phải' : 'trái'}${twice}`;
+      return `Gạt hàng ${list(move.layers, ['trên', 'giữa', 'dưới'])} sang ${right ? 'phải' : 'trái'}${twice}`;
+    }
+    const what =
+      move.layers.length === 3 ? 'cả khối như vặn vô lăng'
+      : move.layers.join() === '1' ? 'mặt đang hướng vào camera'
+      : move.layers.join() === '-1' ? 'mặt phía sau, quay lưng với camera'
+      : move.layers.join() === '0' ? 'lớp giữa, song song với màn hình'
+      : move.layers.includes(1) ? 'hai lớp phía camera' : 'hai lớp phía sau';
+    return `Xoay ${what} theo chiều mũi tên${twice}`;
+  }
+
+  function strokeBoth(ctx, color, draw) {
+    for (const [c, w] of [['rgba(0,0,0,0.7)', 15], [color, 8]]) {
+      ctx.strokeStyle = c;
+      ctx.fillStyle = c;
+      ctx.lineWidth = w;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      draw(w);
+    }
+  }
+  function arrowHead(ctx, x, y, dx, dy, size) {
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    ctx.beginPath();
+    ctx.moveTo(x + ux * size, y + uy * size);
+    ctx.lineTo(x - uy * size * 0.8, y + ux * size * 0.8);
+    ctx.lineTo(x + uy * size * 0.8, y - ux * size * 0.8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  function drawStraight(ctx, x1, y1, x2, y2, color) {
+    strokeBoth(ctx, color, (w) => {
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      arrowHead(ctx, x2, y2, x2 - x1, y2 - y1, w * 1.6);
+    });
+  }
+  function drawArc(ctx, cx, cy, r, clockwise, color, dashed) {
+    const start = -0.75 * Math.PI;
+    const end = start + (clockwise ? 1.5 : -1.5) * Math.PI;
+    strokeBoth(ctx, color, (w) => {
+      ctx.setLineDash(dashed ? [w * 1.8, w * 1.8] : []);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, start, end, !clockwise);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const s = clockwise ? 1 : -1;
+      arrowHead(ctx, cx + r * Math.cos(end), cy + r * Math.sin(end), -Math.sin(end) * s, Math.cos(end) * s, w * 1.6);
+    });
+  }
+
+  // Vẽ một lượt xoay lên khung lưới, theo góc nhìn của camera vào mặt F.
+  function drawMove(canvas, move, color) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const a = GRID.from * w;
+    const cell = (GRID.size * w) / 3;
+    const mid = a + 1.5 * cell;
+    const positive = move.turns > 0;
+    const near = a + 0.25 * cell;
+    const far = a + 2.75 * cell;
+    if (move.axis === 'x')
+      for (const l of move.layers) {
+        const x = a + (l + 1.5) * cell;
+        drawStraight(ctx, x, positive ? far : near, x, positive ? near : far, color); // xoay dương quanh x: mặt trước đi lên
+      }
+    else if (move.axis === 'y')
+      for (const l of move.layers) {
+        const y = a + (l + 1.5) * cell;
+        drawStraight(ctx, positive ? near : far, y, positive ? far : near, y, color); // xoay dương quanh y: mặt trước đi sang phải
+      }
+    else {
+      if (move.layers.includes(1)) drawArc(ctx, mid, mid, cell, positive, color, false);
+      if (move.layers.includes(0) && move.layers.length < 3) drawArc(ctx, mid, mid, cell * 1.42, positive, color, true);
+      if (move.layers.includes(-1)) drawArc(ctx, mid, mid, cell * 1.78, positive, color, move.layers.length < 3);
+    }
+    if (Math.abs(move.turns) === 2) {
+      ctx.save();
+      if (canvas.classList.contains('mirror')) {
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.font = `700 ${Math.round(w * 0.11)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+      ctx.strokeText('×2', mid, mid);
+      ctx.fillStyle = color;
+      ctx.fillText('×2', mid, mid);
+      ctx.restore();
+    }
+  }
+
+  function speak(text) {
+    if (!live.voice || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'vi-VN';
+      window.speechSynthesis.speak(u);
+    } catch (e) { /* không đọc được thì thôi */ }
+  }
+
+  function setLiveStatus(text, kind) {
+    const node = $('#liveStatus');
+    node.textContent = text;
+    node.className = 'scan-status' + (kind ? ' ' + kind : '');
+  }
+
+  function renderLive(announce) {
+    const moves = liveMoves();
+    const done = live.index >= moves.length;
+    const mirror = live.facing === 'user';
+    liveCanvas.classList.toggle('mirror', mirror);
+    const stage = currentStage();
+    const stageName = stage >= 0 ? player.item.stages[stage].name : '';
+    $('#liveStep').textContent = done ? `Xong ${moves.length} / ${moves.length} lượt` : `Lượt ${live.index + 1} / ${moves.length} · ${stageName}`;
+    const text = done ? 'Khối đã được giải xong!' : !live.synced ? 'Giơ mặt tâm xanh lá vào khung, tâm trắng ở trên' : describeMove(moves[live.index], mirror);
+    $('#liveMove').textContent = text;
+    $('#btnLiveBack').disabled = live.index === 0;
+    $('#btnLiveDone').disabled = done || !live.synced;
+    $('#btnLiveVoice').textContent = live.voice ? 'Tắt tiếng' : 'Bật tiếng';
+    if (announce) speak(text);
+  }
+
+  // Cập nhật màu mẫu từ một khung hình mà ta biết chắc màu của từng ô.
+  function learnColors(expected, mean, rate) {
+    expected.forEach((c, i) => {
+      const f = Scan.features(mean[i]);
+      live.refs[c] = live.refs[c].map((v, k) => v * (1 - rate) + f[k] * rate);
+    });
+  }
+  const readColors = (mean) =>
+    mean.map((rgb) => {
+      const f = Scan.features(rgb);
+      let best = null;
+      for (const c of S.FACES) {
+        const d = Scan.distance(f, live.refs[c]);
+        if (!best || d < best.d) best = { c, d };
+      }
+      return best.c;
+    });
+
+  function liveGo(index, mean) {
+    live.index = Math.max(0, Math.min(liveMoves().length, index));
+    live.undo = null;
+    live.moved = false;
+    if (mean) learnColors(live.fronts[live.index], mean, 0.3);
+    seek(live.index);
+    flash(liveCanvas);
+    setLiveStatus(live.index >= liveMoves().length ? 'Hoàn thành!' : 'Đúng rồi, tiếp tục.', 'good');
+    renderLive(true);
+  }
+
+  // Các lượt xoay một mặt có thể bị làm nhầm từ trạng thái hiện tại, kèm mặt F sau khi xoay.
+  function wrongMoves(index) {
+    if (!live.wrong[index]) {
+      const out = [];
+      for (const f of ['U', 'D', 'R', 'L', 'F', 'B'])
+        for (const suffix of ['', "'", '2']) {
+          const move = C.parseAlg(f + suffix)[0];
+          out.push({ move, front: frontOf(C.applyMove(C.clone(live.states[index]), move)) });
+        }
+      live.wrong = { [index]: out };
+    }
+    return live.wrong[index];
+  }
+
+  function liveCheck() {
+    const { sample, still, uniform } = watchFrame(live, liveCanvas);
+    const moves = liveMoves();
+    if (live.index >= moves.length) return;
+    if (!still || !uniform) return;
+    if (still < 4) return;
+
+    if (!live.synced) {
+      // Khung hình đứng yên đầu tiên được coi là mặt xanh lá ban đầu; lấy luôn màu thật của nó làm mẫu.
+      learnColors(live.fronts[0], sample.mean, 0.6);
+      live.synced = true;
+      live.moved = false;
+      setLiveStatus('Đã nhận khối. Làm theo mũi tên.', 'good');
+      return renderLive(true);
+    }
+
+    const seen = readColors(sample.mean);
+    const cur = live.fronts[live.index];
+    const next = live.fronts[live.index + 1];
+    const visible = matches(cur, next) < 9;
+    if (visible && matches(seen, next) >= 8 && matches(seen, next) > matches(seen, cur)) return liveGo(live.index + 1, sample.mean);
+    if (matches(seen, cur) >= 8) {
+      live.undo = null;
+      return setLiveStatus(visible ? 'Làm theo mũi tên rồi đưa khối về lại khung.' : 'Lượt này camera không nhìn thấy được. Xoay xong thì bấm "Xong lượt này".');
+    }
+    const move = moves[live.index];
+    if (Math.abs(move.turns) === 2) {
+      // Lượt xoay 180 độ: mới xoay được một nửa.
+      const half = [1, -1].some((t) => matches(seen, frontOf(C.applyMove(C.clone(live.states[live.index]), C.makeMove(move.base, t)))) >= 8);
+      if (half) return setLiveStatus('Xoay thêm một lần nữa theo cùng chiều.');
+    }
+    const slip = wrongMoves(live.index).find((w) => matches(seen, w.front) >= 8 && matches(w.front, cur) < 8);
+    if (slip) {
+      live.undo = C.invertMove(slip.move);
+      const text = `Xoay nhầm rồi. ${describeMove(live.undo, live.facing === 'user')} (mũi tên đỏ) để quay lại.`;
+      if ($('#liveStatus').textContent !== text) speak('Xoay nhầm rồi, làm theo mũi tên đỏ để quay lại');
+      return setLiveStatus(text, 'bad');
+    }
+    setLiveStatus('Chưa nhận ra mặt này. Đưa mặt đang giải vào vừa khít khung lưới.');
+  }
+
+  function drawLive(now) {
+    if (!live.on) return;
+    if (drawFrame(liveCanvas) && now - live.checkedAt >= 100) {
+      live.checkedAt = now;
+      liveCheck(); // lấy mẫu trước khi vẽ lưới và mũi tên đè lên ảnh
+      if (!live.on) return;
+    }
+    drawGrid(liveCanvas);
+    if (live.synced && live.index < liveMoves().length) {
+      if (live.undo) drawMove(liveCanvas, live.undo, '#ff4d4d');
+      else drawMove(liveCanvas, liveMoves()[live.index], '#3ddc84');
+    }
+    live.raf = requestAnimationFrame(drawLive);
+  }
+
+  function stopLive() {
+    if (live.on) closeCamera();
+    live.on = false;
+    cancelAnimationFrame(live.raf);
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    if (live.wake) live.wake.release().catch(() => {});
+    live.wake = null;
+    $('#live').hidden = true;
+    $('#btnLive').hidden = !solve.solution;
+  }
+
+  async function startLive() {
+    if (!solve.solution) return;
+    stopScan();
+    try {
+      await openCamera(live.facing);
+    } catch (e) {
+      return setSolveMsg(e.message, 'error');
+    }
+    seek(0);
+    // Trạng thái của khối và mặt F trước mỗi lượt xoay.
+    live.states = [C.clone(player.setup)];
+    for (const m of liveMoves()) live.states.push(C.applyMove(C.clone(live.states[live.states.length - 1]), m));
+    live.fronts = live.states.map(frontOf);
+    live.refs = Object.fromEntries(S.FACES.map((f) => [f, (scan.refs && scan.refs[f]) || Scan.features(Scan.NOMINAL[f])]));
+    Object.assign(live, { on: true, index: 0, synced: false, undo: null, wrong: {}, last: null, still: 0, moved: true, checkedAt: 0 });
+    try {
+      if (navigator.wakeLock) live.wake = await navigator.wakeLock.request('screen'); // giữ màn hình luôn sáng
+    } catch (e) { /* không giữ được thì thôi */ }
+    $('#live').hidden = false;
+    $('#btnLive').hidden = true;
+    setLiveStatus('Đang chờ khối vào khung…');
+    renderLive(true);
+    cancelAnimationFrame(live.raf);
+    live.raf = requestAnimationFrame(drawLive);
+    $('#live').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  $('#btnLive').addEventListener('click', startLive);
+  $('#btnLiveClose').addEventListener('click', stopLive);
+  $('#btnLiveDone').addEventListener('click', () => liveGo(live.index + 1));
+  $('#btnLiveBack').addEventListener('click', () => liveGo(live.index - 1));
+  $('#btnLiveVoice').addEventListener('click', () => {
+    live.voice = !live.voice;
+    if (!live.voice && window.speechSynthesis) window.speechSynthesis.cancel();
+    renderLive(false);
+  });
+  $('#btnLiveFlip').addEventListener('click', async () => {
+    live.facing = live.facing === 'user' ? 'environment' : 'user';
+    try {
+      await openCamera(live.facing);
+    } catch (e) {
+      stopLive();
+      return setSolveMsg(e.message, 'error');
+    }
+    renderLive(false);
   });
 
   $('#btnSolve').addEventListener('click', runSolve);
@@ -1010,6 +1359,7 @@
     stopFree();
     stopTimer(false);
     stopScan();
+    stopLive();
     player.onUpdate = null;
     view.turnHandler = null;
     playerEl.hidden = name !== 'learn' && name !== 'library';
@@ -1041,5 +1391,5 @@
   setView(VIEWS.includes(initial) ? initial : 'learn');
 
   // Dùng cho việc kiểm thử thủ công trong console.
-  window.rubikApp = { view, player, solve, timer, practice, scan, setView, loadAlg, seek, openLesson };
+  window.rubikApp = { view, player, solve, timer, practice, scan, live, setView, loadAlg, seek, openLesson };
 })();

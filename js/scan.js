@@ -94,7 +94,7 @@
     return out;
   }
 
-  const api = { FACES, features, distance, classify, identify };
+  const api = { FACES, NOMINAL, features, distance, classify, identify };
   root.RubikScan = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

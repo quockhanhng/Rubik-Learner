@@ -318,7 +318,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .scan-view { position: relative; max-width: 360px; }
 .scan-view canvas { display: block; width: 100%; height: auto; border-radius: 10px; background: #000; }
 /* Thẻ video phải nằm trong trang thì Safari trên iPhone mới cập nhật khung hình; ẩn nó đi, chỉ hiện canvas. */
-.scan-view video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+#scanVideo { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .scan-faces { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; max-width: 360px; margin: 10px 0 2px; }
 .scan-face { padding: 3px; border-radius: 6px; display: grid; gap: 3px; background: var(--surface-2); }
 .scan-face.current { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
@@ -335,3 +335,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .scan-status.good { color: var(--ok); font-weight: 600; }
 .scan-view canvas.flash { outline: 4px solid var(--ok); }
 #btnOtherFit { margin-bottom: 12px; }
+
+/* ---------- Giải cùng camera ---------- */
+#btnLive { margin-bottom: 12px; }
+.live-move { margin: 0 0 10px; font-size: 1.15rem; font-weight: 700; }
+.scan-view canvas.mirror { transform: scaleX(-1); }
+.scan-status.bad { color: var(--c-R); font-weight: 600; }

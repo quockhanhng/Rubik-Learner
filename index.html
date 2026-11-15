@@ -97,7 +97,6 @@
           <p class="scan-status" id="scanStatus"></p>
           <div class="scan-view">
             <canvas id="scanCanvas" width="480" height="480"></canvas>
-            <video id="scanVideo" playsinline muted></video>
           </div>
           <div class="scan-faces" id="scanFaces"></div>
           <div class="solve-actions">
@@ -115,6 +114,21 @@
         </div>
         <p class="solve-msg" id="solveMsg"></p>
         <button id="btnOtherFit" hidden>Thử cách ghép khác</button>
+        <button id="btnLive" class="primary" hidden>Giải cùng camera</button>
+        <div class="scanner" id="live" hidden>
+          <p class="scan-step" id="liveStep"></p>
+          <p class="live-move" id="liveMove"></p>
+          <div class="scan-view"><canvas id="liveCanvas" width="480" height="480"></canvas></div>
+          <p class="scan-status" id="liveStatus"></p>
+          <div class="solve-actions">
+            <button id="btnLiveBack">Lùi một lượt</button>
+            <button id="btnLiveDone" class="primary">Xong lượt này</button>
+            <button id="btnLiveFlip">Đổi camera</button>
+            <button id="btnLiveVoice">Tắt tiếng</button>
+            <button id="btnLiveClose">Đóng camera</button>
+          </div>
+          <p class="hint left">Dựng điện thoại lên giá để rảnh hai tay, màn hình quay về phía mình. Giơ khối trước camera sao cho mặt tâm xanh lá hướng vào camera, tâm trắng ở trên, vừa khít khung lưới. Làm theo mũi tên trên màn hình; sau mỗi lượt đưa khối về lại khung để app kiểm tra.</p>
+        </div>
         <ol class="solution" id="solution"></ol>
       </div>
 
@@ -152,6 +166,8 @@
       </div>
     </section>
   </main>
+
+  <video id="scanVideo" playsinline muted></video>
 
   <script src="js/cube.js"></script>
   <script src="js/f2l.js"></script>
