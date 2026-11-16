@@ -43,6 +43,7 @@
             </select>
           </label>
         </div>
+        <div class="alts" id="playerAlts" hidden></div>
       </div>
 
       <div class="free-status" id="freeStatus" hidden></div>
@@ -60,6 +61,7 @@
           <div class="chips" id="filters"></div>
           <span class="progress" id="progress"></span>
         </div>
+        <p class="hint left source">Mỗi trường hợp có nhiều cách xoay: bấm vào một thẻ để xem trên khối 3D và chọn cách hợp tay, app sẽ nhớ và dùng cách đó khi giải. Các bộ F2L, OLL, PLL, COLL, WV lấy từ <a href="https://speedcubedb.com/a/3x3" target="_blank" rel="noopener">SpeedCubeDB</a>; mọi công thức đều đã được chạy thử trên khối mô phỏng.</p>
         <div id="cards"></div>
       </div>
 
@@ -117,17 +119,18 @@
         <button id="btnLive" class="primary" hidden>Giải cùng camera</button>
         <div class="scanner" id="live" hidden>
           <p class="scan-step" id="liveStep"></p>
+          <p class="live-goal" id="liveGoal"></p>
           <p class="live-move" id="liveMove"></p>
           <div class="scan-view"><canvas id="liveCanvas" width="480" height="480"></canvas></div>
           <p class="scan-status" id="liveStatus"></p>
           <div class="solve-actions">
-            <button id="btnLiveBack">Lùi một lượt</button>
-            <button id="btnLiveDone" class="primary">Xong lượt này</button>
+            <button id="btnLiveDone" class="primary" hidden>Đã xoay lượt này</button>
+            <button id="btnLiveRescan">Quét lại</button>
             <button id="btnLiveFlip">Đổi camera</button>
             <button id="btnLiveVoice">Tắt tiếng</button>
             <button id="btnLiveClose">Đóng camera</button>
           </div>
-          <p class="hint left">Dựng điện thoại lên giá để rảnh hai tay, màn hình quay về phía mình. Giơ khối trước camera sao cho mặt tâm xanh lá hướng vào camera, tâm trắng ở trên. App tự bám theo khối và vẽ mũi tên ngay trên nó; sau mỗi lượt hãy bỏ tay khỏi mặt đang hướng vào camera để app kiểm tra.</p>
+          <p class="hint left">Dựng điện thoại lên giá để rảnh hai tay, màn hình quay về phía mình. Giơ một mặt bất kỳ của khối ra trước camera, cầm kiểu gì cũng được: app tự nhận ra hướng cầm, theo dõi từng lượt bạn xoay và luôn chỉ lượt kế tiếp tính từ trạng thái hiện tại. Xoay khác đi cũng không sao, app tự tính lại. Camera chỉ thấy một mặt, nên sau mỗi lượt hãy bỏ tay khỏi mặt đó một chút; lượt xoay ở mặt sau thì app chỉ nhận ra ở các lượt kế tiếp.</p>
         </div>
         <ol class="solution" id="solution"></ol>
       </div>
@@ -170,10 +173,10 @@
   <video id="scanVideo" playsinline muted></video>
 
   <script src="js/cube.js"></script>
-  <script src="js/f2l.js"></script>
-  <script src="js/ollpll.js"></script>
+  <script src="js/sdb.js"></script>
   <script src="js/data.js"></script>
   <script src="js/solver.js"></script>
+  <script src="js/track.js"></script>
   <script src="js/scan.js"></script>
   <script src="js/detect.js"></script>
   <script src="js/cube3d.js"></script>

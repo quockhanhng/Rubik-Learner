@@ -90,7 +90,6 @@
   }
 
   // ---------- Tiện ích ----------
-  const isRotation = (m) => 'xyz'.includes(m.base);
   const samePlace = (a, b) => a.pos.join() === b.pos.join() && a.rot.join() === b.rot.join();
   const rel = (c, r) => c.pos.join() + '/' + C.matMul(c.rot, C.transpose(r.rot)).join();
   const zeros = (h) => h.filter((v) => v === 0).length;
@@ -178,13 +177,42 @@
   }
 
   // ---------- Bộ giải ----------
-  function createSolver(algorithms) {
+  // Khối đã giải, cầm theo đúng hướng của `s` (dùng làm mốc so sánh từng viên).
+  function refFor(s) {
+    const f = C.frameOf(s);
+    const ref = C.createSolved();
+    for (const c of ref.cubies) {
+      c.rot = f.map((r) => r.slice());
+      c.pos = C.matVec(f, c.home);
+    }
+    return ref;
+  }
+  // Lượt xoay có kéo theo lớp giữa thì các tâm cũng đổi chỗ: xoay mốc theo.
+  const turnRef = (ref, m) => {
+    if (m.layers.includes(0)) C.applyMove(ref, { axis: m.axis, layers: [-1, 0, 1], turns: m.turns });
+  };
+  // Chạy `moves` từ một khối đã giải, chọn hướng cầm ban đầu sao cho chạy xong thì các tâm nằm đúng hướng của `like`.
+  // Dùng để dựng tình huống cho công thức có lượt xoay cả khối: lúc bắt đầu công thức, khối luôn được cầm như `like`.
+  function stateAfter(moves, like) {
+    const net = C.frameOf(C.applyAlg(C.createSolved(), moves));
+    const f0 = C.matMul(C.transpose(net), C.frameOf(like));
+    const s = C.createSolved();
+    for (const c of s.cubies) {
+      c.rot = f0.map((r) => r.slice());
+      c.pos = C.matVec(f0, c.home);
+    }
+    return C.applyAlg(s, moves);
+  }
+
+  // Bộ giải chỉ dùng công thức mà sau khi xoay xong mặt trên vẫn ở trên.
+  const keepsTop = (moves) => C.matVec(C.frameOf(C.applyAlg(C.createSolved(), moves)), [0, 1, 0]).join() === '0,1,0';
+
+  // algorithms: các mục trong thư viện. Mục có `kind` là f2l / oll / pll được dùng để giải; mỗi mục có thể có
+  // nhiều cách (alts). opts.prefer(id) trả về công thức người dùng đã chọn cho trường hợp đó (nếu có).
+  function createSolver(algorithms, opts) {
+    const prefer = (opts && opts.prefer) || (() => null);
     const base = C.applyAlg(C.createSolved(), C.parseAlg('z2'));
-    const setup = (a) => C.applyAlg(C.clone(base), C.invertAlg(C.parseAlg(a.alg)));
-    const shorter = (map, key, a) => {
-      const cur = map.get(key);
-      if (!cur || C.parseAlg(a.alg).length < C.parseAlg(cur.alg).length) map.set(key, a);
-    };
+    const setup = (alg) => stateAfter(C.invertAlg(C.parseAlg(alg)), base);
 
     const pairIndex = (ref, x, z) => ({
       ci: ref.cubies.findIndex((c) => c.pos.join() === [x, 1, z].join()),
@@ -196,11 +224,31 @@
     const f2lTable = new Map();
     const ollTable = new Map();
     const pllTable = new Map();
+    const put = (map, key, entry) => {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(entry);
+    };
     for (const a of algorithms) {
-      if (a.group.startsWith('f2l')) shorter(f2lTable, pairKey(setup(a), base, frPair), a);
-      else if (a.group.startsWith('oll')) shorter(ollTable, ollKey(setup(a)), a);
-      else if (a.group.startsWith('pll')) shorter(pllTable, pllKey(setup(a), 0), a);
+      if (!['f2l', 'oll', 'pll'].includes(a.kind)) continue;
+      for (const alg of a.alts || [a.alg]) {
+        const moves = C.parseAlg(alg);
+        if (!keepsTop(moves)) continue;
+        const s = setup(alg);
+        const entry = { id: a.id, name: a.name, alg, len: moves.length };
+        if (a.kind === 'f2l') put(f2lTable, pairKey(s, base, frPair), entry);
+        else if (a.kind === 'oll') put(ollTable, ollKey(s), entry);
+        else put(pllTable, pllKey(s, 0), entry);
+      }
     }
+    // Trong các cách giải được (mỗi cách kèm lượt U đệm phía trước), ưu tiên cách người dùng đã chọn, rồi tới cách ngắn nhất.
+    const choose = (hits) => {
+      let best = null;
+      for (const h of hits) {
+        const cost = (prefer(h.entry.id) === h.entry.alg ? -1000 : 0) + h.entry.len + (h.u ? 1 : 0);
+        if (!best || cost < best.cost) best = { ...h, cost };
+      }
+      return best;
+    };
 
     const TRIGGERS = { '-1,1': ["L'", 'L'], '-1,-1': ['L', "L'"], '1,-1': ["R'", 'R'] };
     const inWrongSlot = (c) => c.pos[1] !== -1 && !(c.pos[0] === 1 && c.pos[2] === 1);
@@ -213,7 +261,7 @@
       const run = (text) => {
         for (const m of C.parseAlg(text)) {
           C.applyMove(S, m);
-          if (isRotation(m)) C.applyMove(R, m);
+          turnRef(R, m);
           out.push(m);
         }
       };
@@ -239,46 +287,50 @@
         run(best.text);
       }
 
+      const hits = [];
       for (const u of ['', 'U', "U'", 'U2']) {
         const t = C.applyAlg(C.clone(S), C.parseAlg(u));
         if (samePlace(t.cubies[p.ci], R.cubies[p.ci]) && samePlace(t.cubies[p.ei], R.cubies[p.ei])) {
           run(u);
-          return { moves: out, name: null };
+          return { moves: out, hit: null };
         }
-        const hit = f2lTable.get(pairKey(t, R, p));
-        if (hit) {
-          run(u);
-          run(hit.alg);
-          return { moves: out, name: hit.name };
-        }
+        for (const entry of f2lTable.get(pairKey(t, R, p)) || []) hits.push({ u, entry });
       }
-      return null;
+      const pick = choose(hits);
+      if (!pick) return null;
+      run(pick.u);
+      run(pick.entry.alg);
+      return { moves: out, hit: pick.entry };
     }
 
     function solve(input) {
       const s = C.clone(input);
-      const ref = C.createSolved();
+      const ref = refFor(s);
       const steps = [];
       const apply = (moves) => {
         for (const m of moves) {
           C.applyMove(s, m);
-          if (isRotation(m)) C.applyMove(ref, m);
+          turnRef(ref, m);
         }
       };
-      const add = (name, moves, detail) => {
+      // kind: cross / f2l / oll / pll / other; hit: trường hợp trong thư viện mà chặng này dùng (nếu có).
+      const add = (kind, name, moves, detail, hit) => {
         apply(moves);
         const simple = C.simplify(moves);
-        if (simple.length) steps.push({ name, detail: detail || '', moves: simple });
+        if (simple.length) steps.push({ kind, name, detail: detail || '', moves: simple, caseId: hit ? hit.id : null, alg: hit ? hit.alg : null });
       };
       const fail = (error) => ({ error });
 
       if (C.isSolved(s)) return { steps: [], total: 0 };
 
-      add('Lật khối', C.parseAlg('z2'), 'Vàng lên trên, trắng xuống dưới.');
+      // Đưa tâm trắng xuống dưới (nếu chưa), giữ nguyên mặt đang ở phía trước khi có thể.
+      const whiteDown = (t) => C.matVec(C.frameOf(t), [0, -1, 0]).join() === '0,1,0';
+      const flip = ['', 'z2', 'x', "x'", 'z', "z'"].find((r) => whiteDown(C.applyAlg(C.clone(s), C.parseAlg(r))));
+      add('other', 'Lật khối', C.parseAlg(flip), 'Vàng lên trên, trắng xuống dưới.');
 
       const cross = solveCross(s, ref);
       if (!cross) return fail('Không tìm được cách làm chữ thập. Kiểm tra lại màu đã nhập.');
-      add('Chữ thập trắng', cross, 'Bốn cạnh trắng về đáy, khớp màu với tâm các mặt bên.');
+      add('cross', 'Chữ thập trắng', cross, 'Bốn cạnh trắng về đáy, khớp màu với tâm các mặt bên.');
 
       const slots = [[1, 1], [-1, 1], [-1, -1], [1, -1]].map(([x, z]) => pairIndex(ref, x, z));
       const solvedSlot = (p) => samePlace(s.cubies[p.ci], ref.cubies[p.ci]) && samePlace(s.cubies[p.ei], ref.cubies[p.ei]);
@@ -293,20 +345,16 @@
         }
         if (!best) break;
         const colors = C.DIRS.filter((d) => d.some((v, k) => v !== 0 && s.cubies[best.p.ei].home[k] === v)).map((d) => COLOR_NAME[C.faceOf(d)]);
-        add(`F2L cặp ${pairNo++}: ${colors.join(' - ')}`, best.plan.moves, best.plan.name ? `Trường hợp ${best.plan.name}.` : '');
+        add('f2l', `F2L cặp ${pairNo++}: ${colors.join(' - ')}`, best.plan.moves, best.plan.hit ? `Trường hợp ${best.plan.hit.name}.` : '', best.plan.hit);
       }
 
       if (!topDone(s)) {
-        let found = null;
-        for (const u of ['', 'U', "U'", 'U2']) {
-          const hit = ollTable.get(ollKey(C.applyAlg(C.clone(s), C.parseAlg(u))));
-          if (hit) {
-            found = { u, hit };
-            break;
-          }
-        }
+        const hits = [];
+        for (const u of ['', 'U', "U'", 'U2'])
+          for (const entry of ollTable.get(ollKey(C.applyAlg(C.clone(s), C.parseAlg(u)))) || []) hits.push({ u, entry });
+        const found = choose(hits);
         if (!found) return fail('Khối này không giải được: có một góc bị xoay hoặc một cạnh bị lật so với khối hợp lệ. Kiểm tra lại màu đã nhập, hoặc khối đã bị lắp sai.');
-        add(`OLL: ${found.hit.name}`, C.parseAlg(`${found.u} ${found.hit.alg}`), 'Làm cả mặt trên thành màu vàng.');
+        add('oll', `OLL: ${found.entry.name}`, C.parseAlg(`${found.u} ${found.entry.alg}`), 'Làm cả mặt trên thành màu vàng.', found.entry);
       }
 
       const finish = () => {
@@ -314,21 +362,18 @@
         return null;
       };
       if (finish() === null) {
-        let found = null;
+        const hits = [];
         for (const u of ['', 'U', "U'", 'U2']) {
           const t = C.applyAlg(C.clone(s), C.parseAlg(u));
-          for (let shift = 0; shift < 4 && !found; shift++) {
-            const hit = pllTable.get(pllKey(t, shift));
-            if (hit) found = { u, hit };
-          }
-          if (found) break;
+          for (let shift = 0; shift < 4; shift++) for (const entry of pllTable.get(pllKey(t, shift)) || []) hits.push({ u, entry });
         }
+        const found = choose(hits);
         if (!found) return fail('Khối này không giải được: có hai viên bị tráo chỗ so với khối hợp lệ. Kiểm tra lại màu đã nhập, hoặc khối đã bị lắp sai.');
-        add(`PLL: ${found.hit.name}`, C.parseAlg(`${found.u} ${found.hit.alg}`), 'Đưa các viên tầng trên về đúng chỗ.');
+        add('pll', `PLL: ${found.entry.name}`, C.parseAlg(`${found.u} ${found.entry.alg}`), 'Đưa các viên tầng trên về đúng chỗ.', found.entry);
       }
       const last = finish();
       if (last === null) return fail('Không hoàn tất được tầng trên. Kiểm tra lại màu đã nhập.');
-      add('Chỉnh tầng trên', C.parseAlg(last), 'Xoay tầng trên cho khớp màu.');
+      add('other', 'Chỉnh tầng trên', C.parseAlg(last), 'Xoay tầng trên cho khớp màu.');
 
       return { steps, total: steps.reduce((n, st) => n + st.moves.length, 0) };
     }
@@ -418,7 +463,7 @@
     return { net: build(best[0]), exact: false, ambiguous: false, candidates: [] };
   }
 
-  const api = { NET, FACES, COLOR_NAME, FACE_NAME, faceletsFromState, stateFromFacelets, createSolver, rotateFace, resolveOrientation };
+  const api = { refFor, stateAfter, keepsTop, NET, FACES, COLOR_NAME, FACE_NAME, faceletsFromState, stateFromFacelets, createSolver, rotateFace, resolveOrientation };
   root.RubikSolver = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

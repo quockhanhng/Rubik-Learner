@@ -246,7 +246,34 @@
     return [...seen.values()];
   })();
 
+  // Hướng cầm khối hiện tại: phép xoay đưa 6 viên tâm từ chỗ gốc tới chỗ đang nằm.
+  // Một viên nằm đúng chỗ (so với các tâm) khi ma trận xoay của nó bằng đúng phép xoay này.
+  function frameOf(state) {
+    const centers = state.cubies.filter((c) => c.home.filter((v) => v === 0).length === 2);
+    return ROTATIONS.find((r) => centers.every((c) => matVec(r, c.home).join() === c.pos.join()));
+  }
+
+  // Tạo lượt xoay từ trục, các lớp và số lượt 90 độ theo chiều CSS.
+  function moveFromSpec(axis, layers, turns) {
+    const key = layers.slice().sort((a, b) => a - b).join();
+    const base = Object.keys(BASE_MOVES).find((b) => BASE_MOVES[b].axis === axis && BASE_MOVES[b].layers.slice().sort((a, c) => a - c).join() === key);
+    return makeMove(base, turns);
+  }
+
+  // Cùng một lượt xoay đó, viết lại sau khi cả khối đã bị xoay theo ma trận `rot`.
+  function conjugate(move, rot) {
+    const e = [0, 0, 0];
+    e[AXIS_INDEX[move.axis]] = 1;
+    const v = matVec(rot, e);
+    const k = v.findIndex((x) => x !== 0);
+    const sign = v[k];
+    return moveFromSpec('xyz'[k], move.layers.map((l) => l * sign), move.turns * sign);
+  }
+
   const api = {
+    frameOf,
+    moveFromSpec,
+    conjugate,
     AXIS_INDEX,
     DIRS,
     ROTATIONS,

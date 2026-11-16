@@ -1,6 +1,8 @@
 // Kiểm tra logic khối và dữ liệu công thức: node test/verify.js
 const C = require('../js/cube.js');
 const D = require('../js/data.js');
+const S = require('../js/solver.js');
+const T = require('../js/track.js');
 
 let failed = 0;
 const check = (ok, label) => {
@@ -9,10 +11,34 @@ const check = (ok, label) => {
 };
 
 const run = (alg, state) => C.applyAlg(state || C.createSolved(), C.parseAlg(alg));
-const setup = (item) => {
-  const s = run(item.prefix || '');
-  return C.applyAlg(s, C.invertAlg(C.parseAlg(item.alg)));
+// Tình huống trước khi xoay công thức, dựng giống như app: từ chuỗi setup của trường hợp nếu có, không thì chạy
+// ngược công thức; lúc bắt đầu khối luôn được cầm theo đúng prefix.
+const setup = (item, from) => {
+  const base = run(item.prefix || '');
+  if (item.setup && !from) return S.stateAfter(C.parseAlg(item.setup), base);
+  return S.stateAfter(C.invertAlg(C.parseAlg(from || item.alg)), base);
 };
+const zeros = (h) => h.filter((v) => v === 0).length;
+const isTop = (c) => c.home[1] === 1; // tầng vàng
+// Đích của từng bộ công thức, không phụ thuộc hướng cầm khối lúc xoay xong.
+function reached(kind, t) {
+  if (!kind) return C.isSolved(t);
+  const f = C.frameOf(t);
+  const sameRot = (c, r) => c.rot.join() === r.join();
+  if (!t.cubies.filter((c) => !isTop(c) && zeros(c.home) < 2).every((c) => sameRot(c, f))) return false;
+  if (kind === 'f2l') return true;
+  const up = C.matVec(f, [0, 1, 0]).join();
+  if (!t.cubies.filter(isTop).every((c) => C.matVec(c.rot, [0, 1, 0]).join() === up)) return false;
+  if (kind === 'oll' || kind === 'wv') return true;
+  const y = C.frameOf(run('y'));
+  const which = kind === 'coll' ? (c) => isTop(c) && zeros(c.home) === 0 : (c) => isTop(c) && zeros(c.home) < 2;
+  let turn = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let j = 0; j < 4; j++) {
+    if (t.cubies.filter(which).every((c) => sameRot(c, C.matMul(f, turn)))) return true;
+    turn = C.matMul(y, turn);
+  }
+  return false;
+}
 const at = (s, pos, dir) => {
   const st = C.stickerAt(s, pos, dir);
   return st ? st.face : null;
@@ -68,38 +94,63 @@ const scr = C.randomScramble(20);
 check(C.parseAlg(scr).length === 20, `scramble có 20 lượt: ${scr}`);
 
 // --- Thư viện công thức ---
-for (const a of D.algorithms) {
+check(new Set(D.algorithms.map((a) => a.id)).size === D.algorithms.length, 'thư viện: không có id trùng nhau');
+check(D.algorithms.every((a) => D.groups.some((g) => g.id === a.group) && D.families.some((f) => f.id === a.family)), 'thư viện: mục nào cũng thuộc một nhóm và một họ');
+
+// Các mục viết tay (tổ hợp cơ bản, OLL / PLL 2 bước).
+for (const a of D.algorithms.filter((x) => !x.alts)) {
   const s = setup(a);
   check(C.isSolved(C.applyAlg(C.clone(s), C.parseAlg(a.alg))), `${a.id}: chạy xong thì khối được giải`);
-  if (a.group.startsWith('oll') || a.group.startsWith('pll')) {
+  if (a.kind === 'oll' || a.kind === 'pll') {
     check(f2lSolved(s), `${a.id}: giữ nguyên 2 tầng dưới`);
-    check(!topUniform(s) || a.group.startsWith('pll'), `${a.id}: mặt trên chưa vàng hết (OLL)`);
+    check(!topUniform(s) || a.kind === 'pll', `${a.id}: mặt trên chưa vàng hết (OLL)`);
   }
   if (a.group === 'oll-corner') check(topCross(s), `${a.id}: đã có chữ thập vàng`);
   if (a.group === 'oll-cross') check(!topCross(s), `${a.id}: chưa có chữ thập vàng`);
-  if (a.group.startsWith('pll')) {
+  if (a.kind === 'pll') {
     check(topUniform(s), `${a.id}: mặt trên vàng hết`);
     check(!C.isSolved(s), `${a.id}: tình huống chưa được giải`);
   }
 }
 
-// --- F2L: 41 trường hợp, mỗi công thức chỉ đụng tới cặp của khe phải phía trước ---
-const f2l = D.algorithms.filter((a) => a.group.startsWith('f2l'));
-check(f2l.length === 41, `có đủ 41 trường hợp F2L (đang có ${f2l.length})`);
+// Các bộ đầy đủ: mọi cách xoay của một trường hợp đều giải đúng cùng một tình huống.
 const z2Solved = run('z2');
-const isPair = (h) => h[0] === -1 && h[2] === 1 && h[1] <= 0;
 const same = (a, b) => a.pos.join() === b.pos.join() && a.rot.join() === b.rot.join();
+const SLOT_HOME = { FR: [-1, 1], FL: [1, 1], BL: [1, -1], BR: [-1, -1] }; // (x, z) theo vị trí gốc, sau khi lật z2
+const inSlot = (h, slot) => h[0] === SLOT_HOME[slot][0] && h[2] === SLOT_HOME[slot][1] && h[1] <= 0;
+{
+  const sets = {};
+  let algCount = 0;
+  for (const a of D.algorithms.filter((x) => x.alts)) {
+    sets[a.family] = (sets[a.family] || 0) + 1;
+    const lists = a.slots ? a.slots.map((s) => ({ slot: s.id, algs: s.algs })) : [{ slot: null, algs: a.alts }];
+    let ok = a.alts.includes(a.alg) && lists[0].algs === a.alts;
+    for (const { slot, algs } of lists) {
+      const start = slot && slot !== 'FR' ? setup(a, algs[0]) : setup(a);
+      algCount += algs.length;
+      ok = ok && !reached(a.kind, start) && C.frameOf(start).join() === C.frameOf(z2Solved).join();
+      for (const alg of algs) ok = ok && reached(a.kind, C.applyAlg(C.clone(start), C.parseAlg(alg)));
+      if (slot) {
+        // Chữ thập và 3 khe còn lại nguyên vẹn, chỉ cặp của đúng khe đó chưa vào chỗ.
+        const isCenter = (h) => zeros(h) === 2;
+        ok = ok && start.cubies.every((c, i) => c.home[1] > 0 || inSlot(c.home, slot) || isCenter(c.home) || same(c, z2Solved.cubies[i]));
+        ok = ok && !start.cubies.every((c, i) => !inSlot(c.home, slot) || same(c, z2Solved.cubies[i]));
+      }
+    }
+    check(ok, `${a.id}: ${lists.reduce((n, l) => n + l.algs.length, 0)} cách xoay đều giải đúng tình huống`);
+  }
+  check(sets.f2l === 41 && sets.oll === 57 && sets.pll === 21 && sets.coll === 40 && sets.wv === 27, `đủ bộ: F2L ${sets.f2l}/41, OLL ${sets.oll}/57, PLL ${sets.pll}/21, COLL ${sets.coll}/40, WV ${sets.wv}/27`);
+  check(algCount > 1100, `tổng cộng ${algCount} cách xoay trong các bộ đầy đủ`);
+}
+
+// --- F2L: 41 trường hợp khác nhau ---
+const f2l = D.algorithms.filter((a) => a.family === 'f2l');
 const signatures = new Set();
 for (const a of f2l) {
   const s = setup(a);
-  // Viên tâm tự xoay tại chỗ thì không nhìn thấy được trên khối thật, nên không tính.
-  const isCenter = (h) => h.filter((v) => v === 0).length === 2;
-  const others = s.cubies.every((c, i) => c.home[1] > 0 || isPair(c.home) || isCenter(c.home) || same(c, z2Solved.cubies[i]));
-  const pairSolved = s.cubies.every((c, i) => !isPair(c.home) || same(c, z2Solved.cubies[i]));
-  check(others && !pairSolved, `${a.id}: chữ thập và 3 khe còn lại giữ nguyên, cặp chưa vào khe`);
   let sig = null;
   for (let n = 0; n < 4; n++) {
-    const k = s.cubies.filter((c) => isPair(c.home)).map((c) => c.pos.join() + '/' + c.rot.join()).join(' ');
+    const k = s.cubies.filter((c) => inSlot(c.home, 'FR')).map((c) => c.pos.join() + '/' + c.rot.join()).join(' ');
     if (sig === null || k < sig) sig = k;
     run('U', s);
   }
@@ -128,15 +179,19 @@ check(signatures.size === 41, `41 trường hợp F2L không trùng nhau (${sign
     for (let k = 0; k < 4; k++) for (let j = 0; j < 4; j++) out.push(rot(ring(s), 3 * k).map((f) => (cyc.indexOf(f) + j) % 4).join(''));
     return least(out);
   };
-  const fullOll = D.algorithms.filter((a) => a.group === 'oll-corner' || a.group.startsWith('oll-x'));
-  check(new Set(fullOll.map((a) => ollSig(setup(a)))).size === 57 && fullOll.length === 57, `OLL đầy đủ: 57 trường hợp khác nhau (${fullOll.length} công thức)`);
-  const fullPll = D.algorithms.filter((a) => a.group.startsWith('pll'));
-  check(new Set(fullPll.map((a) => pllSig(setup(a)))).size === 21 && fullPll.length === 21, `PLL đầy đủ: 21 trường hợp khác nhau (${fullPll.length} công thức)`);
+  const fullOll = D.algorithms.filter((a) => a.family === 'oll');
+  check(new Set(fullOll.map((a) => ollSig(setup(a)))).size === 57 && fullOll.length === 57, `OLL đầy đủ: 57 trường hợp khác nhau (${fullOll.length} trường hợp)`);
+  const fullPll = D.algorithms.filter((a) => a.family === 'pll');
+  check(new Set(fullPll.map((a) => pllSig(setup(a)))).size === 21 && fullPll.length === 21, `PLL đầy đủ: 21 trường hợp khác nhau (${fullPll.length} trường hợp)`);
+  // Mỗi trường hợp 2 bước cũng nằm trong bộ đầy đủ.
+  const ollAll = new Set(fullOll.map((a) => ollSig(setup(a))));
+  const pllAll = new Set(fullPll.map((a) => pllSig(setup(a))));
+  const two = D.algorithms.filter((a) => a.family === 'two' && a.group !== 'oll-cross');
+  check(two.every((a) => (a.kind === 'oll' ? ollAll.has(ollSig(setup(a))) : pllAll.has(pllSig(setup(a))))), 'các trường hợp 2 bước đều có trong bộ đầy đủ');
 }
 
 // --- Bộ giải: nhập màu rồi giải ---
 {
-  const S = require('../js/solver.js');
   const solver = S.createSolver(D.algorithms);
   let ok = 0, total = 0, longest = 0;
   const N = 400;
@@ -156,6 +211,31 @@ check(signatures.size === 41, `41 trường hợp F2L không trùng nhau (${sign
   }
   check(ok === N, `bộ giải: giải được ${ok}/${N} khối xáo ngẫu nhiên (trung bình ${(total / Math.max(ok, 1)).toFixed(1)} lượt, dài nhất ${longest})`);
   check(solver.solve(C.createSolved()).total === 0, 'bộ giải: khối đã giải thì không cần lượt nào');
+
+  // Khối cầm theo hướng bất kỳ vẫn giải được.
+  let turned = 0;
+  for (let i = 0; i < 60; i++) {
+    const s = run(C.randomScramble(25) + ' ' + ['x', "z'", 'y x2', "x' y", 'z y2', 'y'][i % 6]);
+    const sol = solver.solve(s);
+    if (!sol.error && C.isSolved(sol.steps.reduce((e, st) => C.applyAlg(e, st.moves), C.clone(s)))) turned++;
+  }
+  check(turned === 60, `bộ giải: giải được ${turned}/60 khối đang cầm theo hướng bất kỳ`);
+
+  // Bộ giải dùng đúng cách xoay mà người dùng đã chọn cho từng trường hợp.
+  {
+    const pick = {};
+    const picky = S.createSolver(D.algorithms, { prefer: (id) => pick[id] });
+    let used = 0, tried = 0;
+    for (const a of D.algorithms.filter((x) => ['f2l', 'oll', 'pll'].includes(x.family)))
+      for (const alg of a.alts) {
+        if (!S.keepsTop(C.parseAlg(alg))) continue;
+        tried++;
+        pick[a.id] = alg;
+        const sol = picky.solve(setup(a));
+        if (!sol.error && sol.steps.some((st) => st.caseId === a.id && st.alg === alg)) used++;
+      }
+    check(used === tried, `bộ giải: dùng đúng cách xoay đã chọn trong ${used}/${tried} lần`);
+  }
 
   const net = S.faceletsFromState(run("R U R' U' F2 D L'"));
   const blank = JSON.parse(JSON.stringify(net));
@@ -259,6 +339,68 @@ if (process.argv.includes('--diagrams')) {
     }
 }
 
+// --- Theo dõi khối qua camera: người dùng giả lập, camera chỉ thấy mặt trước ---
+{
+  const solver = S.createSolver(D.algorithms);
+  // Viết lại một lượt xoay sau khi cả khối đã bị xoay.
+  let conj = 0;
+  for (const r of ['x', "y'", 'z2', 'x y', "z' x2"])
+    for (const m of ['R', "U'", 'F2', 'M', 'r', "d'", 'S', 'x']) {
+      const s = run(C.randomScramble(15));
+      const a = run(r, run(m, C.clone(s)));
+      const b = C.applyMove(run(r, C.clone(s)), C.conjugate(C.parseAlg(m)[0], C.frameOf(run(r))));
+      if (a.cubies.every((c, i) => c.rot.join() === b.cubies[i].rot.join())) conj++;
+    }
+  check(conj === 40, `theo dõi: viết lại lượt xoay theo hướng cầm mới đúng ${conj}/40 lần`);
+
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const FACE = [];
+  for (const f of 'UDRLFB') for (const s of ['', "'", '2']) FACE.push(f + s);
+  const TURN = ['x', "x'", 'y', "y'", 'z', "z'", 'y2', 'x2'];
+  const fl = (s) => T.facelets(s).join('');
+  // errors = xác suất mỗi lượt người dùng không làm theo hướng dẫn (xoay bừa một hai lượt, hoặc xoay cả khối).
+  function simulate(runs, errors) {
+    const out = { solved: 0, lost: 0, wrong: 0, reads: 0, moves: 0, slow: 0 };
+    for (let n = 0; n < runs; n++) {
+      const scanned = run(C.randomScramble(25));
+      const actual = run(pick(['', 'x', 'y2 x', "z'", 'y', "x' y"]), C.clone(scanned)); // cầm theo hướng bất kỳ
+      if (errors && n % 4 === 0) run(pick(FACE), actual); // có khi đã xoay thêm sau khi quét
+      const g = T.createGuide(solver, scanned);
+      for (let turn = 0; turn < 500; turn++) {
+        const t0 = Date.now();
+        const ev = g.observe(T.frontOf(T.facelets(actual)));
+        out.slow = Math.max(out.slow, Date.now() - t0);
+        out.reads++;
+        if (ev.kind === 'lost') {
+          out.lost++;
+          break;
+        }
+        if (fl(g.state()) !== fl(actual)) out.wrong++;
+        if (C.isSolved(actual) && g.done()) {
+          out.solved++;
+          break;
+        }
+        const p = g.pending();
+        const r = Math.random();
+        if (!p.length || (C.isSolved(actual) && !g.done())) run(pick(TURN), actual); // cho camera xem mặt khác
+        else if (r < errors * 0.6) { run(pick(FACE), actual); out.moves++; }
+        else if (r < errors * 0.8) run(pick(TURN), actual);
+        else if (r < errors) { run(pick(FACE) + ' ' + pick(FACE), actual); out.moves += 2; }
+        else {
+          for (const x of p) C.applyMove(actual, x.move);
+          out.moves += p.length;
+          if (p.every((x) => x.hidden)) run(pick(TURN), actual);
+        }
+      }
+    }
+    return out;
+  }
+  const clean = simulate(40, 0);
+  check(clean.solved === 40 && clean.lost === 0, `theo dõi: người dùng làm đúng hướng dẫn, cầm khối theo hướng bất kỳ: giải xong ${clean.solved}/40 (trung bình ${Math.round(clean.moves / 40)} lượt, đoán sai trạng thái ở ${clean.wrong}/${clean.reads} lần đọc)`);
+  const messy = simulate(60, 0.12);
+  check(messy.solved >= 56, `theo dõi: 12% số lượt người dùng xoay bừa hoặc xoay cả khối: vẫn giải xong ${messy.solved}/60, mất dấu ${messy.lost} (trung bình ${Math.round(messy.moves / 60)} lượt, đoán sai trạng thái ở ${messy.wrong}/${messy.reads} lần đọc, xử lý chậm nhất ${Math.max(clean.slow, messy.slow)} ms)`);
+}
+
 // --- Bài học ---
 const whiteEdge = (h) => h[1] === -1 && h.filter((v) => v === 0).length === 1;
 for (const t of D.tracks)
@@ -270,7 +412,7 @@ for (const t of D.tracks)
         const moved = s.cubies.filter((q, i) => whiteEdge(q.home) && !same(q, ref.cubies[i])).length;
         check(moved === 1, `bài ${l.id} / ${c.id}: chỉ một cạnh trắng lệch chỗ`);
       }
-      check(!C.isSolved(s) && C.isSolved(C.applyAlg(s, C.parseAlg(c.alg))), `bài ${t.id} / ${l.id} / ${c.id}`);
+      check(!reached(c.setup ? c.kind : null, s) && reached(c.setup ? c.kind : null, C.applyAlg(s, C.parseAlg(c.alg))), `bài ${t.id} / ${l.id} / ${c.id}`);
     }
 
 console.log(failed ? `\n${failed} kiểm tra thất bại` : '\nTất cả đều đạt');

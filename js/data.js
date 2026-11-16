@@ -11,150 +11,181 @@
   'use strict';
 
   const rep = (alg, n) => Array(n).fill(alg).join(' ');
-  // 41 trường hợp F2L nằm ở js/f2l.js (do tools/gen-f2l.js sinh ra).
-  const f2l = root.RUBIK_F2L || (typeof require !== 'undefined' ? require('./f2l.js') : []);
+  // Bộ F2L, OLL, PLL, COLL, WV đầy đủ nằm ở js/sdb.js (do tools/gen-sdb.js sinh ra từ SpeedCubeDB).
+  const SDB = root.RUBIK_SDB || require('./sdb.js');
 
   const algorithms = [
     // ---- Tổ hợp cơ bản ----
     {
-      id: 'trig-sexy', group: 'trigger', name: 'Sexy move',
+      id: 'trig-sexy', family: 'trigger', group: 'trigger', name: 'Sexy move',
       alg: "R U R' U'", prefix: 'z2', mask: 'all',
       note: 'Tổ hợp xuất hiện nhiều nhất. Lặp 6 lần thì khối trở về như cũ.',
     },
     {
-      id: 'trig-sledge', group: 'trigger', name: 'Sledgehammer',
+      id: 'trig-sledge', family: 'trigger', group: 'trigger', name: 'Sledgehammer',
       alg: "R' F R F'", prefix: 'z2', mask: 'all',
       note: 'Hay đi kèm với sexy move trong các công thức OLL.',
     },
 
     // ---- OLL 2 bước: tạo chữ thập vàng ----
     {
-      id: 'oll-line', group: 'oll-cross', name: 'Đường thẳng',
+      id: 'oll-line', family: 'two', kind: 'oll', group: 'oll-cross', name: 'Đường thẳng',
       alg: "F R U R' U' F'", prefix: 'z2', mask: 'yellowCross',
       note: 'Đặt đường thẳng vàng nằm ngang rồi xoay.',
     },
     {
-      id: 'oll-l', group: 'oll-cross', name: 'Chữ L',
+      id: 'oll-l', family: 'two', kind: 'oll', group: 'oll-cross', name: 'Chữ L',
       alg: "F U R U' R' F'", prefix: 'z2', mask: 'yellowCross',
       note: 'Đặt chữ L ở góc trái phía sau (hai cạnh vàng nằm ở phía sau và bên trái).',
     },
     {
-      id: 'oll-dot', group: 'oll-cross', name: 'Dấu chấm',
+      id: 'oll-dot', family: 'two', kind: 'oll', group: 'oll-cross', name: 'Dấu chấm',
       alg: "F R U R' U' F' f R U R' U' f'", prefix: 'z2', mask: 'yellowCross',
       note: 'Chữ f thường nghĩa là xoay cùng lúc 2 lớp phía trước.',
     },
 
     // ---- OLL 2 bước: lật góc vàng ----
     {
-      id: 'oll-sune', group: 'oll-corner', name: 'Sune',
+      id: 'oll-sune', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Sune',
       alg: "R U R' U R U2 R'", prefix: 'z2', mask: 'oll',
       note: 'Một góc vàng đã ngửa, đặt nó ở góc trái phía trước.',
     },
     {
-      id: 'oll-antisune', group: 'oll-corner', name: 'Antisune',
+      id: 'oll-antisune', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Antisune',
       alg: "R U2 R' U' R U' R'", prefix: 'z2', mask: 'oll',
       note: 'Bản ngược của Sune. Góc đã ngửa đặt ở góc phải phía sau.',
     },
     {
-      id: 'oll-h', group: 'oll-corner', name: 'H (hai cặp đèn pha)',
+      id: 'oll-h', family: 'two', kind: 'oll', group: 'oll-corner', name: 'H (hai cặp đèn pha)',
       alg: "R U R' U R U' R' U R U2 R'", prefix: 'z2', mask: 'oll',
       note: 'Không góc nào ngửa, các ô vàng nằm ở mặt trái và mặt phải.',
     },
     {
-      id: 'oll-pi', group: 'oll-corner', name: 'Pi',
+      id: 'oll-pi', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Pi',
       alg: "R U2 R2 U' R2 U' R2 U2 R", prefix: 'z2', mask: 'oll',
       note: 'Không góc nào ngửa, hai ô vàng cùng nằm ở mặt trái.',
     },
     {
-      id: 'oll-headlights', group: 'oll-corner', name: 'Đèn pha (U)',
+      id: 'oll-headlights', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Đèn pha (U)',
       alg: "R2 D R' U2 R D' R' U2 R'", prefix: 'z2', mask: 'oll',
       note: 'Hai góc đã ngửa nằm ở phía sau, hai ô vàng còn lại cùng quay ra trước.',
     },
     {
-      id: 'oll-t', group: 'oll-corner', name: 'Chữ T',
+      id: 'oll-t', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Chữ T',
       alg: "r U R' U' r' F R F'", prefix: 'z2', mask: 'oll',
       note: 'Hai góc đã ngửa nằm bên phải, hai ô vàng còn lại quay ra trước và ra sau.',
     },
     {
-      id: 'oll-bowtie', group: 'oll-corner', name: 'Nơ bướm (L)',
+      id: 'oll-bowtie', family: 'two', kind: 'oll', group: 'oll-corner', name: 'Nơ bướm (L)',
       alg: "F R' F' r U R U' r'", prefix: 'z2', mask: 'oll',
       note: 'Hai góc đã ngửa nằm chéo nhau: trái phía sau và phải phía trước.',
     },
 
     // ---- PLL 2 bước: hoán vị góc ----
     {
-      id: 'pll-t', group: 'pll-corner', name: 'T perm (đổi 2 góc kề)',
+      id: 'pll-t', family: 'two', kind: 'pll', group: 'pll-corner', name: 'T perm (đổi 2 góc kề)',
       alg: "R U R' U' R' F R2 U' R' U' R U R' F'", prefix: 'z2', mask: 'all',
       note: 'Đổi chỗ hai góc bên phải, kèm hai cạnh trái và phải.',
     },
     {
-      id: 'pll-y', group: 'pll-corner', name: 'Y perm (đổi 2 góc chéo)',
+      id: 'pll-y', family: 'two', kind: 'pll', group: 'pll-corner', name: 'Y perm (đổi 2 góc chéo)',
       alg: "F R U' R' U' R U R' F' R U R' U' R' F R F'", prefix: 'z2', mask: 'all',
       note: 'Dùng khi không mặt bên nào có hai góc cùng màu.',
     },
 
     // ---- PLL 2 bước: hoán vị cạnh ----
     {
-      id: 'pll-ua', group: 'pll-edge', name: 'Ua (xoay vòng 3 cạnh)',
+      id: 'pll-ua', family: 'two', kind: 'pll', group: 'pll-edge', name: 'Ua (xoay vòng 3 cạnh)',
       alg: "R U' R U R U R U' R' U' R2", prefix: 'z2', mask: 'all',
       note: 'Mặt đã hoàn chỉnh đặt ở phía sau.',
     },
     {
-      id: 'pll-ub', group: 'pll-edge', name: 'Ub (xoay vòng 3 cạnh, chiều ngược)',
+      id: 'pll-ub', family: 'two', kind: 'pll', group: 'pll-edge', name: 'Ub (xoay vòng 3 cạnh, chiều ngược)',
       alg: "R2 U R U R' U' R' U' R' U R'", prefix: 'z2', mask: 'all',
       note: 'Mặt đã hoàn chỉnh đặt ở phía sau.',
     },
     {
-      id: 'pll-h', group: 'pll-edge', name: 'H perm (đổi 2 cặp cạnh đối)',
+      id: 'pll-h', family: 'two', kind: 'pll', group: 'pll-edge', name: 'H perm (đổi 2 cặp cạnh đối)',
       alg: 'M2 U M2 U2 M2 U M2', prefix: 'z2', mask: 'all',
       note: 'M là lớp giữa, xoay cùng chiều với L.',
     },
     {
-      id: 'pll-z', group: 'pll-edge', name: 'Z perm (đổi 2 cặp cạnh kề)',
+      id: 'pll-z', family: 'two', kind: 'pll', group: 'pll-edge', name: 'Z perm (đổi 2 cặp cạnh kề)',
       alg: "M' U M2 U M2 U M' U2 M2", prefix: 'z2', mask: 'all',
       note: 'Sau công thức có thể cần xoay U thêm một lượt để khớp màu.',
     },
   ];
 
-  algorithms.push(...f2l);
-
-  // Bộ OLL và PLL đầy đủ (js/ollpll.js). Nhóm của OLL tính từ hình các cạnh vàng trên mặt trên.
-  const Cube = root.Cube || require('./cube.js');
-  const LL = root.RUBIK_LL || (typeof require !== 'undefined' ? require('./ollpll.js') : { oll: {}, pll: [] });
-  for (const [num, alg] of Object.entries(LL.oll)) {
-    const s = Cube.applyAlg(Cube.applyAlg(Cube.createSolved(), Cube.parseAlg('z2')), Cube.invertAlg(Cube.parseAlg(alg)));
-    const yellowUp = (x, z) => Cube.stickerAt(s, [x, -1, z], [0, -1, 0]).face === 'D';
-    const edges = [yellowUp(0, -1), yellowUp(1, 0), yellowUp(0, 1), yellowUp(-1, 0)];
-    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].filter(([x, z]) => yellowUp(x, z)).length;
-    const n = edges.filter(Boolean).length;
-    const group = n === 0 ? 'oll-x-dot' : (edges[0] && edges[2]) || (edges[1] && edges[3]) ? 'oll-x-line' : 'oll-x-l';
-    algorithms.push({
-      id: 'oll-' + String(num).padStart(2, '0'), group, name: 'OLL ' + num, alg, prefix: 'z2', mask: 'oll',
-      note: corners ? `${corners} góc đã ngửa sẵn.` : 'Chưa góc nào ngửa.',
-    });
-  }
-  for (const p of LL.pll) algorithms.push({ ...p, prefix: 'z2', mask: 'all' });
-
+  // ---- Các bộ đầy đủ ----
+  // Mỗi trường hợp có nhiều cách (alts); alg là cách đầu tiên. F2L có thêm công thức riêng cho từng khe (slots).
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const SETS = {
+    f2l: {
+      family: 'f2l', kind: 'f2l', mask: 'pair', title: 'F2L',
+      groups: {
+        'Free Pairs': 'Cặp sẵn sàng, chỉ việc đưa vào khe',
+        'Connected Pairs': 'Góc và cạnh đang dính nhau',
+        'Disconnected Pairs': 'Góc và cạnh nằm tách rời',
+        'Corner In Slot': 'Góc nằm trong khe, cạnh ở tầng trên',
+        'Edge In Slot': 'Cạnh nằm trong khe, góc ở tầng trên',
+        'Pieces In Slot': 'Cả góc và cạnh nằm trong khe',
+      },
+    },
+    oll: {
+      family: 'oll', kind: 'oll', mask: 'oll', title: 'OLL',
+      groups: {
+        'OCLL': 'Đã có chữ thập, chỉ lật góc (OCLL)',
+        'All Corners Oriented': 'Góc đã ngửa hết, chỉ lật cạnh',
+        'T Shapes': 'Hình chữ T',
+        'Square Shapes': 'Hình vuông',
+        'C Shapes': 'Hình chữ C',
+        'W Shapes': 'Hình chữ W',
+        'P Shapes': 'Hình chữ P',
+        'Fish Shapes': 'Hình con cá',
+        'Knight Move Shapes': 'Hình nước đi quân mã',
+        'Awkward Shapes': 'Hình khó nhận',
+        'L Shapes': 'Hình chữ L nhỏ',
+        'Lightning Shapes': 'Hình tia chớp',
+        'Line Shapes': 'Hình đường thẳng',
+        'Dot Case': 'Dấu chấm (chưa cạnh nào ngửa)',
+      },
+    },
+    pll: {
+      family: 'pll', kind: 'pll', mask: 'all', title: 'PLL', suffix: ' perm',
+      groups: { 'EPLL': 'Chỉ đổi cạnh', 'Adj Swap': 'Đổi 2 góc kề', 'Opp Swap': 'Đổi 2 góc chéo' },
+    },
+    coll: {
+      family: 'coll', kind: 'coll', mask: 'all', title: 'COLL',
+      groups: { 'Sune': 'Sune', 'Anti Sune': 'Antisune', 'H': 'H', 'Pi': 'Pi', 'U': 'U', 'T': 'T', 'L': 'L' },
+    },
+    wv: { family: 'wv', kind: 'wv', mask: 'oll', title: 'Winter Variation', groups: { '': 'Đưa cặp cuối vào khe và lật luôn góc' } },
+  };
+  const SLOTS = [
+    { id: 'FR', name: 'Khe phải - trước' },
+    { id: 'FL', name: 'Khe trái - trước' },
+    { id: 'BL', name: 'Khe trái - sau' },
+    { id: 'BR', name: 'Khe phải - sau' },
+  ];
   const groups = [
     { id: 'trigger', name: 'Tổ hợp cơ bản' },
-    { id: 'f2l-basic', name: 'F2L · Đưa cặp vào khe' },
-    { id: 'f2l-side', name: 'F2L · Ô trắng quay ngang' },
-    { id: 'f2l-up', name: 'F2L · Ô trắng quay lên' },
-    { id: 'f2l-cu-es', name: 'F2L · Cạnh kẹt trong khe' },
-    { id: 'f2l-cs-eu', name: 'F2L · Góc kẹt trong khe' },
-    { id: 'f2l-both', name: 'F2L · Cả cặp kẹt trong khe' },
     { id: 'oll-cross', name: 'OLL 2 bước · Tạo chữ thập' },
-    { id: 'oll-corner', name: 'OLL 2 bước · Lật góc (cũng là OLL 21-27)' },
-    { id: 'oll-x-dot', name: 'OLL đầy đủ · Dấu chấm' },
-    { id: 'oll-x-line', name: 'OLL đầy đủ · Đường thẳng' },
-    { id: 'oll-x-l', name: 'OLL đầy đủ · Chữ L' },
+    { id: 'oll-corner', name: 'OLL 2 bước · Lật góc' },
     { id: 'pll-corner', name: 'PLL 2 bước · Hoán vị góc' },
     { id: 'pll-edge', name: 'PLL 2 bước · Hoán vị cạnh' },
-    { id: 'pll-x-corner', name: 'PLL đầy đủ · Chỉ đổi góc' },
-    { id: 'pll-x-adj', name: 'PLL đầy đủ · Đổi 2 góc kề' },
-    { id: 'pll-x-g', name: 'PLL đầy đủ · Nhóm G' },
-    { id: 'pll-x-diag', name: 'PLL đầy đủ · Đổi 2 góc chéo' },
   ];
+  for (const [key, set] of Object.entries(SETS)) {
+    for (const [g, label] of Object.entries(set.groups)) groups.push({ id: `${key}-${slug(g) || 'all'}`, name: `${set.title} · ${label}` });
+    (SDB.sets[key] || []).forEach((c, i) => {
+      const num = /(\d+)$/.exec(c.n);
+      const item = {
+        id: `${key}-${num && key !== 'coll' ? num[1].padStart(2, '0') : 'x-' + slug(c.n)}`,
+        family: set.family, kind: set.kind, group: `${key}-${slug(c.g) || 'all'}`,
+        name: c.n + (set.suffix || ''), alg: c.a[0][0], alts: c.a[0], setup: c.s, prefix: 'z2', mask: set.mask, order: i,
+      };
+      if (c.a.length > 1) item.slots = SLOTS.map((s, k) => ({ ...s, algs: c.a[k] })).filter((s) => s.algs && s.algs.length);
+      algorithms.push(item);
+    });
+  }
 
   const lessons = [
     {
@@ -262,20 +293,27 @@
 
   // Sắp công thức theo thứ tự nhóm để thư viện hiển thị đúng trình tự học.
   const order = (a) => groups.findIndex((g) => g.id === a.group);
-  algorithms.sort((a, b) => order(a) - order(b));
+  algorithms.forEach((a, i) => { a.seq = i; });
+  algorithms.sort((a, b) => order(a) - order(b) || a.seq - b.seq);
 
   const families = [
     { id: 'trigger', name: 'Cơ bản' },
+    { id: 'two', name: '2 bước' },
     { id: 'f2l', name: 'F2L' },
     { id: 'oll', name: 'OLL' },
     { id: 'pll', name: 'PLL' },
+    { id: 'coll', name: 'COLL' },
+    { id: 'wv', name: 'WV' },
   ];
 
-  // Lấy một công thức trong thư viện làm tình huống của bài học.
+  // Lấy một công thức trong thư viện làm tình huống của bài học (tìm cả trong các cách khác của từng trường hợp).
+  const Cube = root.Cube || require('./cube.js');
+  const norm = (alg) => Cube.algToString(Cube.parseAlg(alg));
   const ref = (alg, name) => {
-    const found = algorithms.find((a) => a.alg === alg);
-    if (!found) throw new Error('Không tìm thấy công thức: ' + alg);
-    return { ...found, id: 'cfop-' + found.id, name: name || found.name };
+    const want = norm(alg);
+    const found = algorithms.find((a) => (a.alts || [a.alg]).some((x) => norm(x) === want));
+    if (!found) return { id: 'cfop-' + slug(alg.replace(/'/g, 'i')), name: name || alg, alg, prefix: 'z2', mask: 'pair' };
+    return { ...found, id: 'cfop-' + found.id, name: name || found.name, alg: found.alts ? found.alts.find((x) => norm(x) === want) : found.alg, fixed: true };
   };
   const refGroup = (group) => algorithms.filter((a) => a.group === group).map((a) => ref(a.alg));
 
@@ -369,7 +407,7 @@
     { id: 'cfop', name: 'CFOP', desc: 'Giải nhanh, có F2L', lessons: cfopLessons },
   ];
 
-  const data = { algorithms, groups, families, tracks };
+  const data = { algorithms, groups, families, tracks, source: SDB.source };
   root.RUBIK_DATA = data;
   if (typeof module !== 'undefined' && module.exports) module.exports = data;
 })(typeof window !== 'undefined' ? window : globalThis);

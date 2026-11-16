@@ -6,6 +6,7 @@
   const S = window.RubikSolver;
   const Scan = window.RubikScan;
   const Detect = window.RubikDetect;
+  const T = window.RubikTrack;
   const $ = (sel, el) => (el || document).querySelector(sel);
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -45,9 +46,14 @@
     yellowCross: (h, n) => isCenter(h) || h[1] <= 0 || (isEdge(h) && n[1] === 1),
     oll: (h, n) => h[1] <= 0 || n[1] === 1,
     llEdges: (h) => isCenter(h) || h[1] <= 0 || isEdge(h),
-    // F2L: chữ thập trắng và cặp góc - cạnh của khe phải phía trước (sau khi lật vàng lên trên).
-    pair: (h) => isCenter(h) || (isEdge(h) && h[1] === -1) || (h[0] === -1 && h[2] === 1 && h[1] <= 0),
   };
+  // F2L: chữ thập trắng và những viên của hai tầng dưới đang nằm sai chỗ (tức là cặp góc - cạnh cần giải).
+  function pairMask(state) {
+    const f = C.frameOf(state).join();
+    const moved = new Set(state.cubies.filter((c) => c.home[1] <= 0 && zeros(c.home) < 2 && c.rot.join() !== f).map((c) => c.home.join()));
+    return (h) => isCenter(h) || (isEdge(h) && h[1] === -1) || moved.has(h.join());
+  }
+  const maskOf = (item, state) => (item.mask === 'pair' ? pairMask(state) : MASKS[item.mask || 'all']);
 
   const view = new window.CubeView($('#scene'));
   const playerEl = $('#player');
@@ -69,10 +75,26 @@
     speed: $('#speed'),
   };
 
+  // ---------- Cách xoay đã chọn cho từng trường hợp ----------
+  // Mỗi trường hợp trong các bộ đầy đủ có nhiều cách xoay; F2L còn có công thức riêng cho từng khe.
+  // picks[id] = { slot, alg } là lựa chọn của người dùng, được nhớ lại và bộ giải cũng dùng theo.
+  const picks = store.get('rubik.pick', {});
+  const norm = (alg) => C.algToString(C.parseAlg(alg));
+  function variant(item) {
+    if (!item.alts) return item;
+    const pick = picks[item.id] || {};
+    const slot = item.slots && item.slots.find((s) => s.id === pick.slot);
+    const list = slot ? slot.algs : item.alts;
+    const alg = list.includes(pick.alg) ? pick.alg : slot ? list[0] : item.alg;
+    if (slot && slot.id !== 'FR') return { ...item, alg, alts: list, slot: slot.id, setup: null, from: list[0] };
+    return { ...item, alg, slot: item.slots ? 'FR' : null, from: item.setup ? null : item.alts[0] };
+  }
+
+  // Tình huống trước khi xoay công thức. Lúc bắt đầu, khối luôn được cầm theo đúng `prefix` (vàng trên, xanh lá trước).
   function setupState(item) {
-    const s = C.createSolved();
-    C.applyAlg(s, C.parseAlg(item.prefix || ''));
-    return C.applyAlg(s, C.invertAlg(C.parseAlg(item.alg)));
+    const base = C.applyAlg(C.createSolved(), C.parseAlg(item.prefix || ''));
+    if (item.setup) return S.stateAfter(C.parseAlg(item.setup), base);
+    return S.stateAfter(C.invertAlg(C.parseAlg(item.from || item.alg)), base);
   }
 
   function stopPlayer() {
@@ -84,14 +106,16 @@
   // item: { name, alg | moves, prefix, mask, state?, stages? }
   //   state  - trạng thái ban đầu cho sẵn (dùng khi giải khối thật)
   //   stages - [{ name, count }] chia dãy xoay thành từng chặng có tên
-  function loadAlg(item) {
+  function loadAlg(source) {
     stopPlayer();
+    const item = source.moves ? source : variant(source);
     player.item = item;
     player.moves = item.moves || C.parseAlg(item.alg);
     player.setup = item.state ? C.clone(item.state) : setupState(item);
     player.index = 0;
-    view.setMask(MASKS[item.mask || 'all']);
+    view.setMask(maskOf(item, player.setup));
     view.setState(player.setup);
+    renderAlts(source, item);
 
     ui.title.textContent = item.name;
     const nodes = [];
@@ -111,6 +135,42 @@
     ui.moves.replaceChildren(...nodes);
     ui.moves.classList.toggle('long', player.moves.length > 30);
     updatePlayer();
+  }
+
+  // Các cách xoay khác của trường hợp đang mở (và các khe khác, với F2L). Chọn cách nào thì app nhớ cách đó.
+  function renderAlts(source, item) {
+    const box = $('#playerAlts');
+    box.hidden = !source.alts;
+    if (!source.alts) return box.replaceChildren();
+    const choose = (pick) => {
+      picks[source.id] = pick;
+      store.set('rubik.pick', picks);
+      loadAlg(source);
+      if (currentView === 'library') renderLibrary();
+      else if (currentView === 'learn') renderLesson();
+      else if (currentView === 'practice') $('#practiceAlg').textContent = norm(variant(source).alg);
+      play();
+    };
+    const nodes = [];
+    if (source.slots) {
+      const row = el('div', 'alt-slots');
+      for (const s of source.slots) {
+        const b = el('button', 'chip' + (s.id === item.slot ? ' active' : ''), s.name);
+        b.addEventListener('click', () => choose({ slot: s.id }));
+        row.append(b);
+      }
+      nodes.push(row);
+    }
+    nodes.push(el('div', 'alt-title', `${item.alts.length} cách xoay cho trường hợp này`));
+    const list = el('div', 'alt-list');
+    item.alts.forEach((alg, i) => {
+      const b = el('button', 'alt' + (alg === item.alg ? ' active' : ''));
+      b.append(el('span', 'alt-n', String(i + 1)), el('span', 'alg', norm(alg)), el('small', '', `${C.parseAlg(alg).length} lượt`));
+      b.addEventListener('click', () => choose({ slot: item.slot, alg }));
+      list.append(b);
+    });
+    nodes.push(list);
+    box.replaceChildren(...nodes);
   }
 
   // Chặng đang phát (theo vị trí hiện tại), hoặc -1 nếu không chia chặng.
@@ -240,7 +300,13 @@
     const cases = el('div', 'cases');
     l.cases.forEach((c, i) => {
       const b = el('button', 'case' + (i === caseIndex ? ' active' : ''));
-      b.append(el('span', '', c.name), el('span', 'alg', C.algToString(C.parseAlg(c.alg))));
+      const v = variant(c);
+      const pic = el('span', 'pic');
+      pic.innerHTML = picOf(v);
+      const text = el('span', 'case-text');
+      text.append(el('span', '', c.name), el('span', 'alg', norm(v.alg)));
+      if (c.alts) text.append(el('small', '', `${v.alts.length} cách xoay`));
+      b.append(pic, text);
       b.addEventListener('click', () => openLesson(lessonIndex, i));
       cases.append(b);
     });
@@ -312,6 +378,13 @@
     return `<svg viewBox="0 0 76 88" role="img" aria-label="Khối nhìn chéo từ trên xuống">${out}</svg>`;
   }
 
+  // Hình nhỏ của một tình huống: nhìn chéo với các bước làm hai tầng dưới, nhìn từ trên xuống với tầng cuối.
+  const usesIso = (item) => item.kind === 'f2l' || ['pair', 'cross', 'firstLayer', 'f2l'].includes(item.mask);
+  function picOf(item) {
+    const s = setupState(item);
+    return (usesIso(item) ? isoViewSVG : topViewSVG)(s, maskOf(item, s));
+  }
+
   const familyChips = (root, current, extra, onPick) => {
     const options = [{ id: 'all', name: 'Tất cả' }, ...D.families, ...extra];
     root.replaceChildren(
@@ -334,7 +407,7 @@
     });
     $('#progress').textContent = `Đã thuộc ${D.algorithms.filter((a) => learned.has(a.id)).length} / ${D.algorithms.length}`;
     const list = D.algorithms.filter((a) =>
-      filter === 'all' ? true : filter === 'todo' ? !learned.has(a.id) : a.group.startsWith(filter)
+      filter === 'all' ? true : filter === 'todo' ? !learned.has(a.id) : a.family === filter
     );
     const cards = $('#cards');
     if (!list.length) {
@@ -343,11 +416,12 @@
     }
     const makeCard = (a) => {
       const card = el('div', 'card' + (a.id === activeAlgId ? ' active' : '') + (learned.has(a.id) ? ' learned' : ''));
+      const v = variant(a);
       const pic = el('div');
-      const draw = a.group.startsWith('f2l') ? isoViewSVG : topViewSVG;
-      pic.innerHTML = draw(setupState(a), MASKS[a.mask || 'all']);
+      pic.innerHTML = picOf(v);
       const info = el('div');
-      info.append(el('h4', '', a.name), el('span', 'alg', C.algToString(C.parseAlg(a.alg))));
+      info.append(el('h4', '', a.name), el('span', 'alg', norm(v.alg)));
+      if (a.alts) info.append(el('small', 'more', a.slots ? `${v.alts.length} cách · 4 khe` : `${v.alts.length} cách`));
       card.append(pic, info);
       if (a.note) card.append(el('p', 'note', a.note));
 
@@ -389,7 +463,7 @@
   // Mỗi công thức nằm trong một "hộp" 0-4. Nhớ thì lên một hộp, quên thì về hộp 0; hộp càng thấp càng hay được hỏi.
   const WEIGHTS = [8, 5, 3, 2, 1];
   const practice = { filter: 'all', item: null, boxes: store.get('rubik.boxes', {}) };
-  const practicePool = () => D.algorithms.filter((a) => practice.filter === 'all' || a.group.startsWith(practice.filter));
+  const practicePool = () => D.algorithms.filter((a) => practice.filter === 'all' || a.family === practice.filter);
   const boxOf = (a) => Math.min(4, practice.boxes[a.id] || 0);
 
   function pickCard() {
@@ -419,8 +493,10 @@
     stopPlayer();
     const item = pickCard();
     practice.item = item;
-    view.setMask(MASKS[item.mask || 'all']);
-    view.setState(setupState(item));
+    const start = setupState(variant(item));
+    view.setMask(maskOf(item, start));
+    view.setState(start);
+    $('#playerAlts').hidden = true;
     playerEl.hidden = true;
     $('#practiceGroup').textContent = D.groups.find((g) => g.id === item.group).name;
     $('#practiceQuestion').textContent = 'Công thức cho tình huống này là gì?';
@@ -437,7 +513,7 @@
     const item = practice.item;
     $('#practiceQuestion').textContent = item.name;
     $('#practiceTip').hidden = true;
-    $('#practiceAlg').textContent = C.algToString(C.parseAlg(item.alg));
+    $('#practiceAlg').textContent = norm(variant(item).alg);
     $('#practiceNote').textContent = item.note || '';
     $('#practiceAnswer').hidden = false;
     $('#btnReveal').hidden = true;
@@ -462,7 +538,10 @@
   $('#btnForgot').addEventListener('click', () => gradeCard(false));
 
   // ---------- Giải khối: nhập màu khối thật ----------
-  const solver = S.createSolver(D.algorithms);
+  const solver = S.createSolver(D.algorithms, {
+    // Bộ giải dùng luôn cách xoay mà người dùng đã chọn cho từng trường hợp.
+    prefer: (id) => (picks[id] && (!picks[id].slot || picks[id].slot === 'FR') ? picks[id].alg : null),
+  });
   const NET_PLACE = { U: [2, 1], L: [1, 2], F: [2, 2], R: [3, 2], B: [4, 2], D: [2, 3] };
   const blankNet = () => {
     const net = {};
@@ -472,7 +551,7 @@
     }
     return net;
   };
-  const solve = { net: blankNet(), paint: 'U', solution: null, starts: [] };
+  const solve = { net: blankNet(), paint: 'U', solution: null, starts: [], items: [] };
 
   function setSolveMsg(text, kind) {
     const msg = $('#solveMsg');
@@ -544,19 +623,62 @@
     setSolveMsg('');
   }
 
-  function renderSolution() {
-    const stage = currentStage();
+  // Danh sách chặng của lời giải: mỗi chặng có hình khối lúc bắt đầu chặng, dãy xoay, và (nếu là một trường hợp
+  // trong thư viện) các cách xoay khác để đổi.
+  function buildSolution() {
+    const sol = solve.solution;
+    const state = C.clone(sol.state);
+    solve.items = [];
     $('#solution').replaceChildren(
-      ...solve.solution.steps.map((st, i) => {
+      ...sol.steps.map((st, i) => {
         const li = el('li');
-        const b = el('button', i === stage ? 'active' : '');
-        b.append(el('strong', '', `${i + 1}. ${st.name}`), el('span', 'alg', C.algToString(st.moves)));
-        if (st.detail) b.append(el('small', '', st.detail));
-        b.addEventListener('click', () => seek(solve.starts[i]));
+        const b = el('button', 'step');
+        const pic = el('span', 'pic');
+        const top = st.kind === 'oll' || st.kind === 'pll';
+        pic.innerHTML = (top ? topViewSVG : isoViewSVG)(state, null);
+        C.applyAlg(state, st.moves);
+        const text = el('span', 'case-text');
+        text.append(el('strong', '', `${i + 1}. ${st.name}`), el('span', 'alg', C.algToString(st.moves)));
+        if (st.detail) text.append(el('small', '', st.detail));
+        b.append(pic, text);
+        b.addEventListener('click', () => {
+          if (!live.on) seek(solve.starts[i]);
+        });
         li.append(b);
+        solve.items.push(b);
+
+        const lib = st.caseId && D.algorithms.find((a) => a.id === st.caseId);
+        const others = lib ? lib.alts.filter((alg) => alg !== st.alg && S.keepsTop(C.parseAlg(alg))) : [];
+        if (others.length) {
+          const more = el('details', 'step-alts');
+          more.append(el('summary', '', `Đổi cách xoay cho ${lib.name} (${others.length} cách khác)`));
+          for (const alg of others) {
+            const o = el('button', 'alt');
+            o.append(el('span', 'alg', norm(alg)), el('small', '', `${C.parseAlg(alg).length} lượt`));
+            o.addEventListener('click', () => {
+              picks[lib.id] = { alg };
+              store.set('rubik.pick', picks);
+              resolveAgain();
+            });
+            more.append(o);
+          }
+          li.append(more);
+        }
         return li;
       })
     );
+    renderSolution();
+  }
+  function renderSolution() {
+    const stage = currentStage();
+    solve.items.forEach((b, i) => b.classList.toggle('active', i === stage));
+  }
+  // Giải lại sau khi người dùng đổi cách xoay: từ trạng thái hiện tại nếu đang giải cùng camera, không thì từ đầu.
+  function resolveAgain() {
+    if (!live.on) return runSolve();
+    live.guide = T.createGuide(solver, live.guide.state());
+    showPlan();
+    renderLive(true);
   }
 
   function showSolution() {
@@ -577,7 +699,7 @@
       stages: sol.steps.map((st) => ({ name: st.name, count: st.moves.length })),
     });
     player.onUpdate = renderSolution;
-    renderSolution();
+    buildSolution();
     $('#btnLive').hidden = live.on;
   }
 
@@ -781,7 +903,7 @@
   // ---------- Quét khối bằng camera ----------
   // Người dùng xoay khối, đưa lần lượt 6 mặt vào khung lưới theo thứ tự và chiều bất kỳ.
   // App tự chụp khi mặt đứng yên, nhận ra mặt nào qua ô tâm, rồi tự suy ra chiều của từng mặt.
-  const scan = { on: false, raf: 0, shots: [], last: null, still: 0, moved: true, checkedAt: 0, refs: null };
+  const scan = { on: false, raf: 0, shots: [], last: null, still: 0, moved: true, checkedAt: 0, refs: null, resume: false };
   const scanCanvas = $('#scanCanvas');
 
   function setScanStatus(text, good) {
@@ -858,9 +980,11 @@
     $('.scan-entry').hidden = false;
   }
 
-  async function startScan() {
+  // resume = true: quét xong thì quay lại giải cùng camera luôn (dùng khi app mất dấu khối giữa chừng).
+  async function startScan(resume) {
     stopLive();
     clearSolution();
+    scan.resume = resume === true;
     ensureTracker();
     try {
       await openCamera('environment');
@@ -896,13 +1020,14 @@
     fits.index = 0;
     showFit();
     if (!found.exact)
-      setSolveMsg('Đã quét đủ 6 mặt nhưng chưa ghép được thành một khối hợp lệ, nhiều khả năng có ô bị nhận sai màu. Hãy quét lại ở chỗ sáng đều hơn, hoặc tô tay.', 'error');
-    else if (found.ambiguous)
+      return setSolveMsg('Đã quét đủ 6 mặt nhưng chưa ghép được thành một khối hợp lệ, nhiều khả năng có ô bị nhận sai màu. Hãy quét lại ở chỗ sáng đều hơn, hoặc tô tay.', 'error');
+    runSolve();
+    if (found.ambiguous)
       setSolveMsg(`Đã quét xong. Có ${fits.list.length} cách ghép hợp lệ: cầm khối trắng trên, xanh lá trước rồi so với hình; nếu chưa khớp, bấm "Thử cách ghép khác".`, 'ok');
-    else setSolveMsg('Đã quét xong và tự nhận ra chiều của từng mặt. Bấm Giải để xem lời giải.', 'ok');
+    else if (scan.resume && solve.solution) startLive();
   }
 
-  $('#btnScan').addEventListener('click', startScan);
+  $('#btnScan').addEventListener('click', () => startScan(false));
   $('#btnCapture').addEventListener('click', () => {
     if (scan.on && drawFrame(scanCanvas)) takeShot(sampleFace(scanCanvas, currentQuad(scanCanvas)).mean);
   });
@@ -916,18 +1041,14 @@
   });
 
   // ---------- Giải cùng camera ----------
-  // Camera chạy suốt lúc giải. Mặt khối hướng vào camera chính là mặt F của lời giải, nên mỗi lượt xoay
-  // vẽ được thành mũi tên ngay trên khung lưới. Sau mỗi lượt, app đọc 9 ô đang thấy và so với trạng thái
-  // mong đợi: khớp thì tự sang lượt kế, khớp với một lượt khác thì báo xoay nhầm và chỉ cách quay lại.
-  const live = { on: false, raf: 0, index: 0, fronts: [], states: [], refs: {}, synced: false, undo: null, wrong: {}, facing: 'user', voice: true, last: null, still: 0, moved: true, checkedAt: 0, wake: null };
-  const liveCanvas = $('#liveCanvas');
-  const frontOf = (state) => {
-    const out = [];
-    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(C.stickerAt(state, [c - 1, r - 1, 1], [0, 0, 1]).face);
-    return out;
+  // Camera chạy suốt lúc giải và app tự theo dõi khối (js/track.js): người dùng cầm khối kiểu gì, xoay gì cũng
+  // được. Mỗi khi mặt đang hướng vào camera đổi, app tìm xem người dùng vừa làm gì, cập nhật trạng thái của khối,
+  // rồi chỉ mục tiêu và lượt xoay kế tiếp tính từ đúng trạng thái đó. Mặt hướng vào camera luôn là mặt F.
+  const live = {
+    on: false, raf: 0, guide: null, pending: [], refs: {}, synced: false, facing: 'user', voice: true, said: '',
+    last: null, still: 0, moved: true, checkedAt: 0, wake: null, seen: '', seenCount: 0, lostKey: '', lostCount: 0,
   };
-  const matches = (a, b) => a.reduce((n, x, i) => n + (x === b[i] ? 1 : 0), 0);
-  const liveMoves = () => player.moves;
+  const liveCanvas = $('#liveCanvas');
 
   function describeMove(move, mirror) {
     const twice = Math.abs(move.turns) === 2 ? ' hai lần' : '';
@@ -1058,19 +1179,30 @@
   }
 
   function renderLive(announce) {
-    const moves = liveMoves();
-    const done = live.index >= moves.length;
+    const g = live.guide;
     const mirror = live.facing === 'user';
     liveCanvas.classList.toggle('mirror', mirror);
-    const stage = currentStage();
-    const stageName = stage >= 0 ? player.item.stages[stage].name : '';
-    $('#liveStep').textContent = done ? `Xong ${moves.length} / ${moves.length} lượt` : `Lượt ${live.index + 1} / ${moves.length} · ${stageName}`;
-    const text = done ? 'Khối đã được giải xong!' : !live.synced ? 'Giơ mặt tâm xanh lá ra trước camera, tâm trắng ở trên' : describeMove(moves[live.index], mirror);
+    const done = g.done();
+    const p = live.synced && !done ? g.pending() : [];
+    live.pending = p;
+    const stage = g.stage();
+    const left = g.moves.length - g.index;
+    $('#liveStep').textContent = !live.synced ? 'Đang chờ khối…' : done ? 'Đã giải xong' : stage ? `Mục tiêu: ${stage.name} · còn ${left} lượt` : '';
+    $('#liveGoal').textContent = live.synced && !done && stage ? stage.detail : '';
+    let text;
+    if (!live.synced) text = 'Giơ một mặt bất kỳ của khối ra trước camera, cầm kiểu gì cũng được';
+    else if (done) text = 'Khối đã được giải xong!';
+    else if (g.error) text = 'Khối đang thấy không giải được. Bấm "Quét lại" để quét lại 6 mặt.';
+    else if (!p.length) text = 'Xoay cả khối cho camera xem một mặt khác';
+    else {
+      text = p.map((x, i) => (i ? 'rồi ' : '') + describeMove(x.move, mirror).replace(/^./, (ch) => (i ? ch.toLowerCase() : ch)) + (x.hidden ? ' (camera không thấy lượt này)' : '')).join(', ');
+      if (p.every((x) => x.hidden)) text += '. Xong thì xoay cả khối cho camera xem một mặt khác.';
+    }
     $('#liveMove').textContent = text;
-    $('#btnLiveBack').disabled = live.index === 0;
-    $('#btnLiveDone').disabled = done || !live.synced;
+    $('#btnLiveDone').hidden = !(p.length && p[0].hidden);
     $('#btnLiveVoice').textContent = live.voice ? 'Tắt tiếng' : 'Bật tiếng';
-    if (announce) speak(text);
+    if (announce && text !== live.said) speak(text);
+    live.said = text;
   }
 
   // Cập nhật màu mẫu từ một khung hình mà ta biết chắc màu của từng ô.
@@ -1091,71 +1223,60 @@
       return best.c;
     });
 
-  function liveGo(index, mean) {
-    live.index = Math.max(0, Math.min(liveMoves().length, index));
-    live.undo = null;
-    live.moved = false;
-    if (mean) learnColors(live.fronts[live.index], mean, 0.3);
-    seek(live.index);
-    flash(liveCanvas);
-    setLiveStatus(live.index >= liveMoves().length ? 'Hoàn thành!' : 'Đúng rồi, tiếp tục.', 'good');
-    renderLive(true);
-  }
-
-  // Các lượt xoay một mặt có thể bị làm nhầm từ trạng thái hiện tại, kèm mặt F sau khi xoay.
-  function wrongMoves(index) {
-    if (!live.wrong[index]) {
-      const out = [];
-      for (const f of ['U', 'D', 'R', 'L', 'F', 'B'])
-        for (const suffix of ['', "'", '2']) {
-          const move = C.parseAlg(f + suffix)[0];
-          out.push({ move, front: frontOf(C.applyMove(C.clone(live.states[index]), move)) });
-        }
-      live.wrong = { [index]: out };
-    }
-    return live.wrong[index];
+  // Đưa đường giải hiện tại của bộ dẫn đường lên khối 3D, dãy lượt xoay và danh sách chặng.
+  function showPlan() {
+    const g = live.guide;
+    solve.solution = { steps: g.steps, total: g.moves.length, state: g.start };
+    showSolution();
+    if (g.index) seek(g.index);
   }
 
   function liveCheck() {
     const { sample, still, uniform, lost } = watchFrame(live, liveCanvas);
-    const moves = liveMoves();
-    if (live.index >= moves.length) return;
-    if (lost) return setLiveStatus('Chưa thấy khối. Giơ thẳng mặt đang giải ra trước camera.');
-    if (!still || !uniform) return;
-    if (still < 4) return;
+    const g = live.guide;
+    if (lost) return setLiveStatus('Chưa thấy khối. Giơ thẳng một mặt của khối ra trước camera.');
+    if (!uniform || still < 3) return;
+    // Đọc hai lần liền ra cùng 9 màu thì mới tin.
+    const seen = readColors(sample.mean);
+    const key = seen.join('');
+    live.seenCount = key === live.seen ? live.seenCount + 1 : 1;
+    live.seen = key;
+    if (live.seenCount < 2) return;
 
-    if (!live.synced) {
-      // Khung hình đứng yên đầu tiên được coi là mặt xanh lá ban đầu; lấy luôn màu thật của nó làm mẫu.
-      learnColors(live.fronts[0], sample.mean, 0.6);
-      live.synced = true;
-      live.moved = false;
-      setLiveStatus('Đã nhận khối. Làm theo mũi tên.', 'good');
+    const ev = key === live.lostKey ? { kind: 'lost' } : g.observe(seen);
+    if (ev.kind === 'lost') {
+      // Không cách giải thích nào khớp với mặt đang thấy: có thể đọc sai màu, hoặc khối đã bị xoay quá nhiều.
+      live.lostKey = key;
+      if (++live.lostCount < 15) return setLiveStatus('Chưa khớp được mặt này, giữ yên thêm chút hoặc cho xem mặt khác…');
+      return setLiveStatus('Mất dấu khối rồi. Xoay cho camera xem mặt khác, hoặc bấm "Quét lại" để quét lại 6 mặt rồi giải tiếp.', 'bad');
+    }
+    live.lostKey = '';
+    live.lostCount = 0;
+    const first = !live.synced;
+    live.synced = true;
+    // Mặt vừa thấy khớp hẳn với trạng thái đang tin: lấy luôn màu thật của nó để chỉnh màu mẫu.
+    if (!g.unsure()) learnColors(g.front(), sample.mean, 0.2);
+
+    if (ev.kind === 'same') {
+      if (!first) return;
+      setLiveStatus('Đã nhận ra khối. Làm theo mũi tên.', 'good');
       return renderLive(true);
     }
-
-    const seen = readColors(sample.mean);
-    const cur = live.fronts[live.index];
-    const next = live.fronts[live.index + 1];
-    const visible = matches(cur, next) < 9;
-    if (visible && matches(seen, next) >= 8 && matches(seen, next) > matches(seen, cur)) return liveGo(live.index + 1, sample.mean);
-    if (matches(seen, cur) >= 8) {
-      live.undo = null;
-      return setLiveStatus(visible ? 'Làm theo mũi tên, rồi bỏ tay khỏi mặt này để app kiểm tra.' : 'Lượt này camera không nhìn thấy được. Xoay xong thì bấm "Xong lượt này".');
+    flash(liveCanvas);
+    if (ev.kind === 'path') {
+      seek(g.index);
+      setLiveStatus(g.done() ? 'Hoàn thành!' : 'Đúng rồi, tiếp tục.', 'good');
+      return renderLive(true);
     }
-    const move = moves[live.index];
-    if (Math.abs(move.turns) === 2) {
-      // Lượt xoay 180 độ: mới xoay được một nửa.
-      const half = [1, -1].some((t) => matches(seen, frontOf(C.applyMove(C.clone(live.states[live.index]), C.makeMove(move.base, t)))) >= 8);
-      if (half) return setLiveStatus('Xoay thêm một lần nữa theo cùng chiều.');
-    }
-    const slip = wrongMoves(live.index).find((w) => matches(seen, w.front) >= 8 && matches(w.front, cur) < 8);
-    if (slip) {
-      live.undo = C.invertMove(slip.move);
-      const text = `Xoay nhầm rồi. ${describeMove(live.undo, live.facing === 'user')} (mũi tên đỏ) để quay lại.`;
-      if ($('#liveStatus').textContent !== text) speak('Xoay nhầm rồi, làm theo mũi tên đỏ để quay lại');
-      return setLiveStatus(text, 'bad');
-    }
-    setLiveStatus('Chưa nhận ra mặt này. Giơ lại mặt đang giải thẳng trước camera.');
+    showPlan();
+    const mirror = live.facing === 'user';
+    if (g.done()) setLiveStatus('Hoàn thành!', 'good');
+    else if (first) setLiveStatus('Đã nhận ra khối và hướng đang cầm. Làm theo mũi tên.', 'good');
+    else if (ev.kind === 'switch') setLiveStatus('Mặt vừa thấy khác với dự đoán: đã chỉnh lại trạng thái của khối và tính lại đường giải.');
+    else if (!ev.moves.length) setLiveStatus('Đã nhận hướng cầm mới, đường giải được viết lại theo hướng này.');
+    else if (ev.moves.length === 1) setLiveStatus(`Vừa thấy bạn: ${describeMove(ev.moves[0], mirror).toLowerCase()}. Đã tính lại đường giải từ đây.`);
+    else setLiveStatus(`Vừa thấy bạn xoay ${ev.moves.length} lượt ngoài đường giải. Đã tính lại đường giải từ đây.`);
+    renderLive(true);
   }
 
   function drawLive(now) {
@@ -1169,9 +1290,9 @@
     if (quad)
       onCube(liveCanvas, quad, () => {
         drawGrid(liveCanvas);
-        if (live.synced && live.index < liveMoves().length) {
-          if (live.undo) drawMove(liveCanvas, live.undo, '#ff4d4d');
-          else drawMove(liveCanvas, liveMoves()[live.index], '#3ddc84');
+        if (live.pending.length) {
+          const stage = live.guide.stage();
+          drawMove(liveCanvas, live.pending[0].move, stage && stage.kind === 'undo' ? '#ff4d4d' : '#3ddc84');
         }
       });
     live.raf = requestAnimationFrame(drawLive);
@@ -1180,6 +1301,7 @@
   function stopLive() {
     if (live.on) closeCamera();
     live.on = false;
+    live.pending = [];
     cancelAnimationFrame(live.raf);
     if (window.speechSynthesis) window.speechSynthesis.cancel();
     if (live.wake) live.wake.release().catch(() => {});
@@ -1190,6 +1312,7 @@
 
   async function startLive() {
     if (!solve.solution) return;
+    const from = solve.solution.state;
     stopScan();
     ensureTracker();
     try {
@@ -1197,13 +1320,9 @@
     } catch (e) {
       return setSolveMsg(e.message, 'error');
     }
-    seek(0);
-    // Trạng thái của khối và mặt F trước mỗi lượt xoay.
-    live.states = [C.clone(player.setup)];
-    for (const m of liveMoves()) live.states.push(C.applyMove(C.clone(live.states[live.states.length - 1]), m));
-    live.fronts = live.states.map(frontOf);
     live.refs = Object.fromEntries(S.FACES.map((f) => [f, (scan.refs && scan.refs[f]) || Scan.features(Scan.NOMINAL[f])]));
-    Object.assign(live, { on: true, index: 0, synced: false, undo: null, wrong: {}, last: null, still: 0, moved: true, checkedAt: 0 });
+    Object.assign(live, { on: true, guide: T.createGuide(solver, from), pending: [], synced: false, said: '', last: null, still: 0, moved: true, checkedAt: 0, seen: '', seenCount: 0, lostKey: '', lostCount: 0 });
+    showPlan();
     try {
       if (navigator.wakeLock) live.wake = await navigator.wakeLock.request('screen'); // giữ màn hình luôn sáng
     } catch (e) { /* không giữ được thì thôi */ }
@@ -1218,8 +1337,12 @@
 
   $('#btnLive').addEventListener('click', startLive);
   $('#btnLiveClose').addEventListener('click', stopLive);
-  $('#btnLiveDone').addEventListener('click', () => liveGo(live.index + 1));
-  $('#btnLiveBack').addEventListener('click', () => liveGo(live.index - 1));
+  $('#btnLiveDone').addEventListener('click', () => {
+    live.guide.skip();
+    seek(live.guide.index);
+    renderLive(true);
+  });
+  $('#btnLiveRescan').addEventListener('click', () => startScan(true));
   $('#btnLiveVoice').addEventListener('click', () => {
     live.voice = !live.voice;
     if (!live.voice && window.speechSynthesis) window.speechSynthesis.cancel();
@@ -1480,5 +1603,5 @@
   setView(VIEWS.includes(initial) ? initial : 'learn');
 
   // Dùng cho việc kiểm thử thủ công trong console.
-  window.rubikApp = { view, player, solve, timer, practice, scan, live, tracker, setView, loadAlg, seek, openLesson };
+  window.rubikApp = { view, player, solve, timer, practice, scan, live, tracker, picks, setView, loadAlg, seek, openLesson };
 })();

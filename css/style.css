@@ -341,3 +341,28 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .live-move { margin: 0 0 10px; font-size: 1.15rem; font-weight: 700; }
 .scan-view canvas.mirror { transform: scaleX(-1); }
 .scan-status.bad { color: var(--c-R); font-weight: 600; }
+
+/* ---- Hình minh hoạ trong bài học và lời giải, các cách xoay khác ---- */
+.case, .solution button.step { display: grid; grid-template-columns: 54px 1fr; align-items: center; gap: 12px; }
+.pic { display: block; width: 54px; }
+.pic svg { width: 100%; height: auto; display: block; }
+.case-text { display: grid; gap: 2px; min-width: 0; }
+.case-text small, .card .more { color: var(--muted); font-size: 0.8rem; }
+.card .more { display: block; margin-top: 2px; }
+.source a { color: var(--accent); }
+
+.alts { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.alt-slots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.alt-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 6px; }
+.alt-list { display: grid; gap: 6px; }
+.alt { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left; padding: 7px 10px; border-radius: 8px; }
+.alt .alg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.alt small { color: var(--muted); white-space: nowrap; }
+.alt-n { color: var(--muted); font-size: 0.8rem; min-width: 1em; }
+.alt.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.alt.active .alg { color: var(--text); font-weight: 600; }
+
+.step-alts { margin: 4px 0 2px 66px; font-size: 0.88rem; }
+.step-alts summary { cursor: pointer; color: var(--muted); padding: 2px 0; }
+.step-alts .alt { margin-top: 6px; }
+.live-goal { margin: -6px 0 10px; color: var(--muted); font-size: 0.9rem; min-height: 1.2em; }
